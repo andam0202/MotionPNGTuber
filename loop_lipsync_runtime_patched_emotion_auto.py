@@ -82,6 +82,7 @@ from motionpngtuber.lipsync_core import (
     format_emotion_hud_text,
     EMOJI_BY_LABEL,
 )
+from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
@@ -989,7 +990,8 @@ def run(args) -> None:
         centroid = float(np.clip(centroid / (samplerate * 0.5), 0.0, 1.0))
         # Non-blocking put: drop if full (better than blocking audio callback)
         try:
-            feat_q.put_nowait((rms_raw, centroid))
+            # formant モード用に生チャンクも渡す（母音判定に使用）
+            feat_q.put_nowait((rms_raw, centroid, x.copy()))
         except queue.Full:
             pass  # Drop sample if queue is full
 
@@ -1040,6 +1042,7 @@ def run(args) -> None:
     peak_decay = 0.995
     silence_gate_rms = args.silence_gate  # サイレンスゲート閾値
     rms_smooth_q = deque(maxlen=3)
+    raw_buf: deque[np.ndarray] = deque(maxlen=4)  # formant母音判定用の生波形窓(約40ms)
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
     cent_hist = deque(maxlen=args.audio_hz * args.hist_sec)
@@ -1239,7 +1242,9 @@ def run(args) -> None:
                     except queue.Empty:
                         break
 
-                for rms_raw, cent in items:
+                for rms_raw, cent, xchunk in items:
+                    if args.lipsync_mode == "formant":
+                        raw_buf.append(xchunk)
                     if rms_raw < noise + 0.0005:
                         noise = 0.99 * noise + 0.01 * rms_raw
                     else:
@@ -1290,6 +1295,25 @@ def run(args) -> None:
                         prev_mouth_level,
                     )
                     prev_mouth_level = mouth_level
+
+                    # ---- formant モード: 開口時の口形を母音(あ/い/う/え/お)で決める ----
+                    if args.lipsync_mode == "formant":
+                        if mouth_level == "closed":
+                            mouth_shape_now = "closed"
+                        else:
+                            win = (
+                                np.concatenate(list(raw_buf))
+                                if len(raw_buf) > 0 else xchunk
+                            )
+                            vowel, _f = classify_vowel(win, samplerate)
+                            keys = set(mouth.keys())
+                            sh = vowel_to_shape(vowel, keys)
+                            # 開度が小さい(half)ときは母音形を控えめにhalfへ寄せる
+                            if mouth_level == "half" and sh in ("aa", "open"):
+                                sh = "half" if "half" in keys else sh
+                            mouth_shape_now = sh
+                        e_prev2, e_prev1 = e_prev1, env
+                        continue
 
                     # vowel selection on peaks
                     if mouth_level == "open":
@@ -1511,6 +1535,8 @@ def parse_args():
     ap.add_argument("--audio-hz", type=int, default=100)
     ap.add_argument("--cutoff-hz", type=float, default=8.0)
     ap.add_argument("--blend-frames", type=int, default=3, help="口形状切替のαブレンドフレーム数(0=無効、滑らかな切替)")
+    ap.add_argument("--lipsync-mode", default="level", choices=["level", "formant"],
+                    help="level=音量3段階+centroid母音 / formant=LPCフォルマントで あ/い/う/え/お 判定")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
