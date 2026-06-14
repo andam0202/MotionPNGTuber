@@ -227,3 +227,10 @@ review_mouth_track_gui.md
 
 # Legacy requirements (managed by pyproject.toml + uv.lock)
 requirements.txt
+
+# Rhubarb Lip Sync バイナリ（DL物・87MB、再取得可能）
+tools/Rhubarb-Lip-Sync-*/
+tools/*.zip
+
+# オフライン口パク合成の出力物
+workspace/**/out_viseme*.mp4
