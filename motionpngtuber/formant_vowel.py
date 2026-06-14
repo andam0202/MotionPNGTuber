@@ -8,6 +8,9 @@
 """
 from __future__ import annotations
 
+import json
+import os
+
 import numpy as np
 
 # 女性話者のおおよその母音フォルマント (F1, F2) [Hz]。
@@ -132,6 +135,22 @@ def classify_vowel(
             best_d = d
             best_v = v
     return best_v, (f1, f2)
+
+
+def load_calib(path: str) -> dict[str, tuple[float, float]] | None:
+    """calibrate_formant.py が保存した個人化フォルマントテーブルを読む。"""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                out[k] = (float(v[0]), float(v[1]))
+        return out or None
+    except Exception:
+        return None
 
 
 def vowel_to_shape(vowel: str | None, available: set[str]) -> str:

@@ -30,7 +30,7 @@ try:
     import tkinter as tk
 except Exception:
     tk = None  # GUI unavailable
-from collections import deque
+from collections import deque, Counter
 
 import cv2
 import numpy as np
@@ -82,7 +82,7 @@ from motionpngtuber.lipsync_core import (
     format_emotion_hud_text,
     EMOJI_BY_LABEL,
 )
-from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape
+from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape, load_calib
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
@@ -1043,6 +1043,10 @@ def run(args) -> None:
     silence_gate_rms = args.silence_gate  # サイレンスゲート閾値
     rms_smooth_q = deque(maxlen=3)
     raw_buf: deque[np.ndarray] = deque(maxlen=4)  # formant母音判定用の生波形窓(約40ms)
+    vowel_hist: deque[str] = deque(maxlen=5)      # 母音の多数決スムージング用
+    formant_calib = load_calib(args.formant_calib) if args.lipsync_mode == "formant" else None
+    if args.lipsync_mode == "formant":
+        print(f"[formant] calib: {'loaded ' + args.formant_calib if formant_calib else 'なし(標準テーブル使用)'}")
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
     cent_hist = deque(maxlen=args.audio_hz * args.hist_sec)
@@ -1300,12 +1304,18 @@ def run(args) -> None:
                     if args.lipsync_mode == "formant":
                         if mouth_level == "closed":
                             mouth_shape_now = "closed"
+                            vowel_hist.clear()
                         else:
                             win = (
                                 np.concatenate(list(raw_buf))
                                 if len(raw_buf) > 0 else xchunk
                             )
-                            vowel, _f = classify_vowel(win, samplerate)
+                            vowel, _f = classify_vowel(win, samplerate, formants=formant_calib)
+                            if vowel is not None:
+                                vowel_hist.append(vowel)
+                            # 直近フレームの多数決で安定化（瞬間的な誤判定を抑える）
+                            if vowel_hist:
+                                vowel = Counter(vowel_hist).most_common(1)[0][0]
                             keys = set(mouth.keys())
                             sh = vowel_to_shape(vowel, keys)
                             # 開度が小さい(half)ときは母音形を控えめにhalfへ寄せる
@@ -1537,6 +1547,8 @@ def parse_args():
     ap.add_argument("--blend-frames", type=int, default=3, help="口形状切替のαブレンドフレーム数(0=無効、滑らかな切替)")
     ap.add_argument("--lipsync-mode", default="level", choices=["level", "formant"],
                     help="level=音量3段階+centroid母音 / formant=LPCフォルマントで あ/い/う/え/お 判定")
+    ap.add_argument("--formant-calib", default="formant_calib.json",
+                    help="calibrate_formant.py が出力した個人化フォルマントJSON（あれば自動読込）")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
