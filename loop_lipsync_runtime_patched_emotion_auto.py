@@ -1050,6 +1050,8 @@ def run(args) -> None:
     last_vowel_change_t = -999.0
     e_prev2, e_prev1 = 0.0, 0.0
     mouth_shape_now = "closed"
+    _prev_drawn_shape = "closed"
+    _blend_counter = 999
     prev_mouth_level = "closed"
 
     # ---- virtual cam ----
@@ -1070,7 +1072,7 @@ def run(args) -> None:
     print("stream latency:", stream.latency)
 
     def draw_one(dst_rgb: np.ndarray, frame_idx: int, track: MouthTrack | None, scale: float):
-        nonlocal mouth_shape_now
+        nonlocal mouth_shape_now, _prev_drawn_shape, _blend_counter
         meta = _compose_mouth_patch(
             mouth,
             mouth_shape_now,
@@ -1080,7 +1082,45 @@ def run(args) -> None:
             int(args.mouth_fixed_x),
             int(args.mouth_fixed_y),
         )
-        alpha_blit_rgb_safe(dst_rgb, meta["patch"], int(meta["x0"]), int(meta["y0"]))
+        patch = meta["patch"]
+        # αブレンド: 口形状切替を滑らかに補間（前形状と重み合成）
+        if args.blend_frames > 0:
+            if _prev_drawn_shape != mouth_shape_now:
+                _blend_counter = 0
+            if _blend_counter < args.blend_frames and _prev_drawn_shape is not None:
+                meta_prev = _compose_mouth_patch(
+                    mouth, _prev_drawn_shape, frame_idx, track, scale,
+                    int(args.mouth_fixed_x), int(args.mouth_fixed_y),
+                )
+                prev_patch = meta_prev["patch"]
+                # patchサイズ・配置が一致する場合のみブレンド（quad=None時のスプライト
+                # サイズ違いではブレンドせず即切替してクラッシュを避ける）
+                if (
+                    prev_patch.shape == patch.shape
+                    and int(meta_prev["x0"]) == int(meta["x0"])
+                    and int(meta_prev["y0"]) == int(meta["y0"])
+                ):
+                    t = float(_blend_counter) / float(args.blend_frames)
+                    # プリマルチプライドαでクロスフェード（透明領域RGB=0との単純加算
+                    # による暗いフリンジを防ぐ）
+                    a_prev = prev_patch[..., 3:4].astype(np.float32) / 255.0
+                    a_cur = patch[..., 3:4].astype(np.float32) / 255.0
+                    w_prev = a_prev * (1.0 - t)
+                    w_cur = a_cur * t
+                    out_a = w_prev + w_cur
+                    rgb = (
+                        prev_patch[..., :3].astype(np.float32) * w_prev
+                        + patch[..., :3].astype(np.float32) * w_cur
+                    )
+                    safe_a = np.where(out_a > 1e-6, out_a, 1.0)
+                    rgb = rgb / safe_a
+                    blended = np.empty_like(patch)
+                    blended[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+                    blended[..., 3] = np.clip(out_a[..., 0] * 255.0, 0, 255).astype(np.uint8)
+                    patch = blended
+            _blend_counter += 1
+        _prev_drawn_shape = mouth_shape_now
+        alpha_blit_rgb_safe(dst_rgb, patch, int(meta["x0"]), int(meta["y0"]))
 
         quad = meta.get("quad")
         if args.draw_quad and quad is not None:
@@ -1470,6 +1510,7 @@ def parse_args():
     ap.add_argument("--render-fps", type=int, default=30)
     ap.add_argument("--audio-hz", type=int, default=100)
     ap.add_argument("--cutoff-hz", type=float, default=8.0)
+    ap.add_argument("--blend-frames", type=int, default=3, help="口形状切替のαブレンドフレーム数(0=無効、滑らかな切替)")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
