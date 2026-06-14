@@ -602,6 +602,8 @@ def load_mouth_sprites(mouth_dir: str, full_w: int, full_h: int) -> dict[str, np
         "half": "half.png",
         "u": "u.png",
         "e": "e.png",
+        "aa": "aa.png",   # 大きく開く（Rhubarb viseme D 用）
+        "o": "o.png",     # お/丸く開く（Rhubarb viseme E 用）
     }
 
     def crop_full_canvas(rgba: np.ndarray, key: str) -> np.ndarray:
