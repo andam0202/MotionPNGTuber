@@ -63,10 +63,15 @@ def _get_fb(sr: int, n_fft: int) -> np.ndarray:
     return fb
 
 
-def frame_mfccs(x: np.ndarray, sr: int) -> np.ndarray:
+VOICED_RATIO = 0.18  # フレームを有声とみなすエネルギー閾値（窓内ピーク比）
+
+
+def frame_mfccs(x: np.ndarray, sr: int, voiced_only: bool = True) -> np.ndarray:
     """波形を 25ms/10ms でフレーム化し、各フレームの MFCC(c1..c12) を返す。
 
-    戻り値 shape=(n_frames, 12)。短すぎる場合は (0,12)。
+    voiced_only=True のとき、フレームエネルギーが窓内ピークの VOICED_RATIO 未満の
+    無音/低エネルギーフレームを捨てる（無音のMFCCはノイズ支配でラベルを汚すため）。
+    戻り値 shape=(n_frames, 12)。残らなければ (0,12)。
     """
     x = np.asarray(x, dtype=np.float64).flatten()
     if x.size < 64:
@@ -80,11 +85,22 @@ def frame_mfccs(x: np.ndarray, sr: int) -> np.ndarray:
         n_fft <<= 1
     win = np.hamming(flen)
     fb = _get_fb(sr, n_fft)
-    feats: list[np.ndarray] = []
     if x.size < flen:
         x = np.pad(x, (0, flen - x.size))
-    for i in range(0, x.size - flen + 1, hop):
-        frame = x[i:i + flen] * win
+    raw_frames = [x[i:i + flen] for i in range(0, x.size - flen + 1, hop)]
+    if not raw_frames:
+        return np.zeros((0, 12), dtype=np.float64)
+    energies = np.array([float(np.mean(f ** 2)) for f in raw_frames])
+    if voiced_only:
+        thr = energies.max() * VOICED_RATIO
+        keep = energies >= max(thr, 1e-9)
+    else:
+        keep = np.ones(len(raw_frames), dtype=bool)
+    feats: list[np.ndarray] = []
+    for fr, ok in zip(raw_frames, keep):
+        if not ok:
+            continue
+        frame = fr * win
         spec = np.fft.rfft(frame, n=n_fft)
         power = (np.abs(spec) ** 2) / n_fft
         mel = fb @ power

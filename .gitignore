@@ -234,3 +234,7 @@ tools/*.zip
 
 # オフライン口パク合成の出力物
 workspace/**/out_viseme*.mp4
+
+vowel_mfcc.npz
+vowel_mfcc_raw.npz
+formant_calib.json
