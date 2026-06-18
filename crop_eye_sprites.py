@@ -27,14 +27,30 @@ def build_alpha(w: int, h: int, feather: int = 21) -> np.ndarray:
     return m
 
 
+def color_match(gen: np.ndarray, base: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """生成画像(VAEで色がずれる)を、目以外の不変領域でbaseに平均色合わせする。"""
+    if base is None or base.shape != gen.shape:
+        return gen
+    ref = alpha < 10  # 目以外(=本来baseと同一のはず)
+    if ref.sum() < 1000:
+        return gen
+    g = gen.astype(np.float32); b = base.astype(np.float32)
+    for c in range(3):
+        off = float(b[:, :, c][ref].mean() - g[:, :, c][ref].mean())
+        g[:, :, c] += off
+    return np.clip(g, 0, 255).astype(np.uint8)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="目スプライト(RGBA)切り出し")
     ap.add_argument("--gen-dir", default="workspace/gura/eye_gen")
     ap.add_argument("--out-dir", default="workspace/gura/eye")
+    ap.add_argument("--base", default="workspace/gura/base_face.png", help="色合わせ基準")
     ap.add_argument("--states", default="closed,half")
     args = ap.parse_args()
 
     gen = Path(args.gen_dir); out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+    base = cv2.imread(args.base)
     made = []
     for st in [s.strip() for s in args.states.split(",") if s.strip()]:
         src = gen / f"{st}_full.png"
@@ -43,6 +59,7 @@ def main() -> int:
         bgr = cv2.imread(str(src))
         h, w = bgr.shape[:2]
         alpha = build_alpha(w, h)
+        bgr = color_match(bgr, base, alpha)  # 元絵に色味を合わせる
         rgba = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
         rgba[:, :, 3] = alpha
         dst = out / f"{st}.png"

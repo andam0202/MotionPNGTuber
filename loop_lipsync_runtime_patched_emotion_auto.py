@@ -1076,11 +1076,20 @@ def run(args) -> None:
                 print(f"[eye] スプライト合成: {args.eye_sprite_dir}/closed.png")
             else:
                 print(f"[eye] 警告: {args.eye_sprite_dir}/closed.png が読めず手続き描画にフォールバック")
+        # 頭の動きに追従させる基準: 口トラックの frame0 中心(base_face=rest pose相当)
+        eye_ref_center = None
+        try:
+            q0 = track_prev.get_quad(0)
+            if q0 is not None:
+                c = q0.mean(axis=0)
+                eye_ref_center = (float(c[0]), float(c[1]))
+        except Exception:
+            pass
         eye_overlay = EyeBlinkOverlay(
             left=_parse_box(args.eye_left, EyeBlinkOverlay().left),
             right=_parse_box(args.eye_right, EyeBlinkOverlay().right),
             open_level=args.blink_open, close_level=args.blink_close, swap=args.eye_swap,
-            closed_rgb=closed_rgb, closed_alpha=closed_a,
+            closed_rgb=closed_rgb, closed_alpha=closed_a, ref_center=eye_ref_center,
         )
         eye_rx = EyeTrackReceiver(port=args.eye_udp_port).start()
         mode = "スプライト" if closed_rgb is not None else "手続き"
@@ -1434,7 +1443,11 @@ def run(args) -> None:
 
                 if eye_overlay is not None and eye_rx is not None:
                     bl, br, _age = eye_rx.get_blink()
-                    eye_overlay.draw(frp, bl, br)
+                    cc = None
+                    q = track_prev.get_quad(vid_prev.frame_idx)
+                    if q is not None:
+                        m = q.mean(axis=0); cc = (float(m[0]), float(m[1]))
+                    eye_overlay.draw(frp, bl, br, cc)
 
                 if auto_request_path and auto_result_path and (now - auto_request_last_check) >= 0.15:
                     auto_request_last_check = now
@@ -1547,7 +1560,12 @@ def run(args) -> None:
                     draw_one(frf, vid_full.frame_idx, track_full, 1.0)
                     if eye_overlay is not None and eye_rx is not None:
                         bl, br, _age = eye_rx.get_blink()
-                        eye_overlay.draw(frf, bl, br)
+                        cc = None
+                        if track_full is not None:
+                            q = track_full.get_quad(vid_full.frame_idx)
+                            if q is not None:
+                                m = q.mean(axis=0); cc = (float(m[0]), float(m[1]))
+                        eye_overlay.draw(frf, bl, br, cc)
                     cam.send(frf)
                     cam.sleep_until_next_frame()
 

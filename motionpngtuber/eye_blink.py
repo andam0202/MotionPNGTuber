@@ -142,13 +142,22 @@ class EyeBlinkOverlay:
         self._fit_cache[key] = c
         return c
 
-    def _draw_sprite(self, frame: np.ndarray, bl: float, br: float) -> None:
+    def _draw_sprite(self, frame: np.ndarray, bl: float, br: float,
+                     dx: float = 0.0, dy: float = 0.0) -> None:
         h, w = frame.shape[:2]
         rgb, aL, aR, (x0, y0, x1, y1) = self._fit(w, h)
-        A = np.clip(aL[y0:y1, x0:x1] * bl + aR[y0:y1, x0:x1] * br, 0.0, 1.0)[:, :, None]
-        sub = frame[y0:y1, x0:x1].astype(np.float32)
-        spr = rgb[y0:y1, x0:x1].astype(np.float32)
-        frame[y0:y1, x0:x1] = (sub * (1.0 - A) + spr * A).astype(np.uint8)
+        dxi, dyi = int(round(dx)), int(round(dy))  # 頭の動きにスプライトを平行追従
+        # 合成先(dest)= スプライトbboxを(dx,dy)平行移動。フレーム内にクリップ。
+        cx0, cy0 = max(0, x0 + dxi), max(0, y0 + dyi)
+        cx1, cy1 = min(w, x1 + dxi), min(h, y1 + dyi)
+        if cx1 <= cx0 or cy1 <= cy0:
+            return
+        sx0, sy0 = cx0 - dxi, cy0 - dyi  # 対応するスプライト元領域
+        sx1, sy1 = cx1 - dxi, cy1 - dyi
+        A = np.clip(aL[sy0:sy1, sx0:sx1] * bl + aR[sy0:sy1, sx0:sx1] * br, 0.0, 1.0)[:, :, None]
+        sub = frame[cy0:cy1, cx0:cx1].astype(np.float32)
+        spr = rgb[sy0:sy1, sx0:sx1].astype(np.float32)
+        frame[cy0:cy1, cx0:cx1] = (sub * (1.0 - A) + spr * A).astype(np.uint8)
 
     def draw(self, frame: np.ndarray, blink_l: float, blink_r: float,
              cur_center: tuple[float, float] | None = None) -> None:
@@ -156,7 +165,11 @@ class EyeBlinkOverlay:
             bl, br = self._norm(blink_l), self._norm(blink_r)
             if self.swap:
                 bl, br = br, bl
-            self._draw_sprite(frame, bl, br)
+            dx = dy = 0.0
+            if self.ref_center is not None and cur_center is not None:
+                dx = cur_center[0] - self.ref_center[0]
+                dy = cur_center[1] - self.ref_center[1]
+            self._draw_sprite(frame, bl, br, dx, dy)
             return
         h, w = frame.shape[:2]
         s = w / 1280.0  # 目座標は base_face(1280幅)基準。フレーム解像度に合わせる
