@@ -23,7 +23,7 @@ import sounddevice as sd
 
 os.environ.setdefault("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
 
-from motionpngtuber.formant_vowel import estimate_formants
+from motionpngtuber.formant_vowel import _all_poles, estimate_formants
 
 VOWELS = [
     ("a", "あ"),
@@ -91,6 +91,7 @@ def main() -> int:
     ap.add_argument("--device", type=int, default=4, help="入力デバイス番号(マイク)")
     ap.add_argument("--out", default="formant_calib.json", help="保存先JSON")
     ap.add_argument("--dur", type=float, default=2.0, help="各母音の録音秒数")
+    ap.add_argument("--debug", action="store_true", help="検出極(周波数/バンド幅)一覧を表示")
     args = ap.parse_args()
 
     try:
@@ -114,6 +115,12 @@ def main() -> int:
         print(f"  ●録音中（{args.dur:.0f}秒）! 「{jp}ー」", flush=True)
         x = record_stream(args.dur, sr, args.device)
         rms = float(np.sqrt(np.mean(x**2))) if x.size else 0.0
+        if args.debug and x.size:
+            n = len(x)
+            mid = x[int(n * 0.40):int(n * 0.40) + int(sr * 0.04)]  # 中央の40ms窓
+            poles = _all_poles(np.asarray(mid, dtype=np.float64), sr, 0, 700.0)
+            shown = [(round(f), round(b)) for f, b in poles if f <= 4000]
+            print(f"  [debug] 極(f,bw)<=4kHz: {shown}", flush=True)
         res = measure_vowel(x, sr) if x.size else None
         if res is None:
             print(f"  [警告] {jp}: 測定できず（rms={rms:.5f} 音量不足？）。スキップ。\n")

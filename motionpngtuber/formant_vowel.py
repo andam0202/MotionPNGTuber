@@ -113,30 +113,32 @@ def estimate_formants(
     sr: int,
     order: int = 0,
     n: int = 2,
-    max_bw_hz: float = 500.0,
+    max_bw_hz: float = 700.0,
 ) -> list[float]:
     """音声チャンクから F1, F2 を推定して返す（取れない要素は省く）。
 
-    周波数だけでは a の F1(=850) と o の F2(=900) を分離できないため、
-    バンド幅(共鳴の鋭さ)で強い極を2本選び、低い方をF1・高い方をF2とする。
-    偽極(前舌母音 F1/F2 間)はバンド幅が広く落ちる。ダウンサンプルが前提。
+    F1 は必ず最低域のフォルマント（前舌母音で~300、開母音で~850）。実声では
+    F1 のバンド幅が広いので、F1 は「低域[200,1100]の最低周波数の極」で取り、
+    F2 は「F1+250 より上で最も鋭い(共鳴が強い)極」で取る。偽極(F1/F2間)は
+    バンド幅が広く F2 で負ける。ダウンサンプル前提。
     """
     poles = _all_poles(x, sr, order, max_bw_hz)
     if not poles:
         return []
-    cand = [(f, b) for f, b in poles if 120.0 <= f <= 3500.0]
+    cand = [(f, b) for f, b in poles if 150.0 <= f <= 3500.0]
     if not cand:
         return []
-    cand.sort(key=lambda p: p[1])  # バンド幅昇順＝鋭い順
-    min_sep = 200.0  # 同一フォルマントの分裂を1本に潰す最小間隔[Hz]
-    picked: list[float] = []
-    for f, _b in cand:
-        if all(abs(f - g) >= min_sep for g in picked):
-            picked.append(f)
-        if len(picked) >= 2:
-            break
-    picked.sort()  # 低い方=F1, 高い方=F2
-    return picked[:n]
+    # F1: 低域[200,1100]の最低周波数。無ければ全体の最低。
+    low = [(f, b) for f, b in cand if 200.0 <= f <= 1100.0]
+    f1 = (min(low, key=lambda p: p[0]) if low else min(cand, key=lambda p: p[0]))[0]
+    if n < 2:
+        return [f1]
+    # F2: F1+250 より上で最も鋭い極（最も弱いバンド幅）。
+    high = [(f, b) for f, b in cand if f1 + 250.0 <= f <= 3200.0]
+    if not high:
+        return [f1]
+    f2 = min(high, key=lambda p: p[1])[0]
+    return [f1, f2]
 
 
 def classify_vowel(
