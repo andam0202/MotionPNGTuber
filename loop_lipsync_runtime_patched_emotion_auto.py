@@ -84,6 +84,8 @@ from motionpngtuber.lipsync_core import (
 )
 from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape, load_calib
 from motionpngtuber.vowel_mfcc import extract_feature as mfcc_extract, load_model as mfcc_load
+from motionpngtuber.eye_track_udp import EyeTrackReceiver
+from motionpngtuber.eye_blink import EyeBlinkOverlay, EyeBox
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
@@ -1054,6 +1056,24 @@ def run(args) -> None:
             print(f"[mfcc] ERROR: モデル {args.mfcc_model} が読めません。train_vowel_mfcc.py で学習してください。")
         else:
             print(f"[mfcc] model: {args.mfcc_model} 母音={mfcc_model.labels} k={mfcc_model.k}")
+
+    # ---- webカメラ アイトラッキング(まばたき) ----
+    eye_rx: EyeTrackReceiver | None = None
+    eye_overlay: EyeBlinkOverlay | None = None
+    if args.eye_track == "udp":
+        def _parse_box(s, default):
+            if not s:
+                return default
+            v = [float(x) for x in s.split(",")]
+            return EyeBox(v[0], v[1], v[2], v[3])
+        eye_overlay = EyeBlinkOverlay(
+            left=_parse_box(args.eye_left, EyeBlinkOverlay().left),
+            right=_parse_box(args.eye_right, EyeBlinkOverlay().right),
+            open_level=args.blink_open, close_level=args.blink_close, swap=args.eye_swap,
+        )
+        eye_rx = EyeTrackReceiver(port=args.eye_udp_port).start()
+        print(f"[eye] UDP まばたき受信 :{args.eye_udp_port} open={args.blink_open} close={args.blink_close} "
+              f"(Windowsで pose_server.py --host=<WSL_IP> --port={args.eye_udp_port} を起動)")
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
     cent_hist = deque(maxlen=args.audio_hz * args.hist_sec)
@@ -1400,6 +1420,10 @@ def run(args) -> None:
                 frp = frp_base.copy()
                 draw_meta = draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
 
+                if eye_overlay is not None and eye_rx is not None:
+                    bl, br, _age = eye_rx.get_blink()
+                    eye_overlay.draw(frp, bl, br)
+
                 if auto_request_path and auto_result_path and (now - auto_request_last_check) >= 0.15:
                     auto_request_last_check = now
                     try:
@@ -1509,6 +1533,9 @@ def run(args) -> None:
                 if cam is not None and vid_full is not None:
                     frf = vid_full.get_frame(now).copy()
                     draw_one(frf, vid_full.frame_idx, track_full, 1.0)
+                    if eye_overlay is not None and eye_rx is not None:
+                        bl, br, _age = eye_rx.get_blink()
+                        eye_overlay.draw(frf, bl, br)
                     cam.send(frf)
                     cam.sleep_until_next_frame()
 
@@ -1530,6 +1557,8 @@ def run(args) -> None:
 
     finally:
         color_rebuilder.close()
+        if eye_rx is not None:
+            eye_rx.stop()
         if cam is not None:
             cam.close()
         vid_prev.close()
@@ -1585,6 +1614,15 @@ def parse_args():
                     help="train_vowel_mfcc.py が出力した母音kNNモデル（mfccモードで自動読込）")
     ap.add_argument("--mfcc-min-conf", type=float, default=0.45,
                     help="mfccモードで採用する最小信頼度(0..1)。低い判定は直近を維持")
+    # webカメラ・アイトラッキング(まばたき)
+    ap.add_argument("--eye-track", default="off", choices=["off", "udp"],
+                    help="udp=webカメラのまばたき(pose_server→UDP)でアバターを瞬きさせる")
+    ap.add_argument("--eye-udp-port", type=int, default=5006, help="まばたきUDP受信ポート")
+    ap.add_argument("--blink-open", type=float, default=0.25, help="この値以下を開眼とみなす生eyeBlink")
+    ap.add_argument("--blink-close", type=float, default=0.6, help="この値以上を閉眼とみなす生eyeBlink")
+    ap.add_argument("--eye-swap", action="store_true", help="左右の目を入れ替える(鏡像補正)")
+    ap.add_argument("--eye-left", default="", help="左目box 'cx,cy,hw,hh'(base1280基準)。空=既定")
+    ap.add_argument("--eye-right", default="", help="右目box 'cx,cy,hw,hh'。空=既定")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
