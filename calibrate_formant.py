@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import time
 
 import numpy as np
@@ -31,6 +32,40 @@ VOWELS = [
     ("e", "え"),
     ("o", "お"),
 ]
+
+
+def record_stream(dur: float, sr: int, device: int, channels: int = 1) -> np.ndarray:
+    """InputStream(コールバック)で dur 秒録音する。
+
+    sd.rec()/sd.wait() は WSLg+PulseAudio で返ってこないため、
+    動作実績のあるライブ版と同じ InputStream 方式で録る。
+    """
+    q: "queue.Queue[np.ndarray]" = queue.Queue()
+
+    def cb(indata, frames, time_info, status):  # noqa: ANN001
+        q.put(indata.copy())
+
+    frames: list[np.ndarray] = []
+    blocksize = max(256, int(sr * 0.02))  # 20ms
+    with sd.InputStream(
+        samplerate=sr,
+        channels=channels,
+        blocksize=blocksize,
+        dtype="float32",
+        callback=cb,
+        device=device,
+        latency="low",
+    ):
+        t0 = time.time()
+        while time.time() - t0 < dur:
+            try:
+                frames.append(q.get(timeout=0.5))
+            except queue.Empty:
+                pass
+    if not frames:
+        return np.zeros(0, dtype=np.float32)
+    data = np.concatenate(frames)
+    return data[:, 0] if data.ndim > 1 else data
 
 
 def measure_vowel(x: np.ndarray, sr: int) -> tuple[float, float] | None:
@@ -77,16 +112,15 @@ def main() -> int:
             print(f"  {c}...", flush=True)
             time.sleep(0.8)
         print(f"  ●録音中（{args.dur:.0f}秒）! 「{jp}ー」", flush=True)
-        rec = sd.rec(int(args.dur * sr), samplerate=sr, channels=1, device=args.device, dtype="float32")
-        sd.wait()
-        x = rec[:, 0]
-        res = measure_vowel(x, sr)
+        x = record_stream(args.dur, sr, args.device)
+        rms = float(np.sqrt(np.mean(x**2))) if x.size else 0.0
+        res = measure_vowel(x, sr) if x.size else None
         if res is None:
-            print(f"  [警告] {jp}: フォルマントを測定できませんでした（音量不足？）。スキップ。\n")
+            print(f"  [警告] {jp}: 測定できず（rms={rms:.5f} 音量不足？）。スキップ。\n")
             continue
         f1, f2 = res
         calib[key] = [round(f1, 1), round(f2, 1)]
-        print(f"  {jp}({key}): F1={f1:.0f}Hz  F2={f2:.0f}Hz\n")
+        print(f"  {jp}({key}): F1={f1:.0f}Hz  F2={f2:.0f}Hz  (rms={rms:.4f})\n")
 
     if len(calib) < 3:
         print("ERROR: 測定できた母音が少なすぎます。マイク音量・デバイスを確認してください。")

@@ -58,13 +58,35 @@ F1_BAND = (180.0, 1000.0)
 F2_BAND = (1000.0, 3200.0)
 
 
+def _downsample(x: np.ndarray, sr: int, target_sr: int = 10000) -> tuple[np.ndarray, int]:
+    """フォルマント推定用に ~10kHz へ間引く。低域(F1帯)の分解能を確保する。
+
+    高サンプルレート(44.1k等)＋高次LPCだと低域の極が偽位置に出て母音が
+    区別できなくなる。整数倍で軽くアンチエイリアスして間引く。
+    """
+    if sr <= int(target_sr * 1.5):
+        return np.asarray(x, dtype=np.float64), sr
+    factor = max(2, int(round(sr / target_sr)))
+    try:
+        from scipy.signal import decimate
+        y = decimate(x, factor, ftype="fir")
+    except Exception:
+        # scipy が無い場合: 移動平均LPF後に間引く簡易版
+        kernel = np.ones(factor) / factor
+        y = np.convolve(x, kernel, mode="same")[::factor]
+    return np.asarray(y, dtype=np.float64), sr // factor
+
+
 def _all_poles(x: np.ndarray, sr: int, order: int, max_bw_hz: float) -> list[tuple[float, float]]:
     """LPC の極から (周波数, バンド幅) のリストを周波数昇順で返す。"""
     x = np.asarray(x, dtype=np.float64).flatten()
     if x.size < 32:
         return []
+    x, sr = _downsample(x, sr)  # ~10kHzへ。以降の周波数は実Hzで正しい
+    if x.size < 32:
+        return []
     if order <= 0:
-        order = int(sr / 1000) + 2  # 16kHz→18次（フォルマント抽出の定番）
+        order = int(sr / 1000) + 2  # 10kHz→12次（フォルマント抽出の定番）
     x = x - x.mean()
     x = np.append(x[0], x[1:] - 0.97 * x[:-1])  # プリエンファシス
     x *= np.hamming(x.size)
@@ -93,22 +115,28 @@ def estimate_formants(
     n: int = 2,
     max_bw_hz: float = 500.0,
 ) -> list[float]:
-    """音声チャンクから F1, F2 を帯域分割で推定して返す（取れない要素は省く）。
+    """音声チャンクから F1, F2 を推定して返す（取れない要素は省く）。
 
-    低い順に拾うのではなく、F1 は F1_BAND、F2 は F2_BAND の中で最も鋭い
-    （バンド幅最小＝共鳴が強い）極を選ぶ。F1/F2 間の偽極を F2 と誤らない。
+    周波数だけでは a の F1(=850) と o の F2(=900) を分離できないため、
+    バンド幅(共鳴の鋭さ)で強い極を2本選び、低い方をF1・高い方をF2とする。
+    偽極(前舌母音 F1/F2 間)はバンド幅が広く落ちる。ダウンサンプルが前提。
     """
     poles = _all_poles(x, sr, order, max_bw_hz)
     if not poles:
         return []
-    f1c = [(f, b) for f, b in poles if F1_BAND[0] <= f <= F1_BAND[1]]
-    f2c = [(f, b) for f, b in poles if F2_BAND[0] < f <= F2_BAND[1]]
-    out: list[float] = []
-    if f1c:
-        out.append(min(f1c, key=lambda p: p[1])[0])
-    if f2c:
-        out.append(min(f2c, key=lambda p: p[1])[0])
-    return out[:n]
+    cand = [(f, b) for f, b in poles if 120.0 <= f <= 3500.0]
+    if not cand:
+        return []
+    cand.sort(key=lambda p: p[1])  # バンド幅昇順＝鋭い順
+    min_sep = 200.0  # 同一フォルマントの分裂を1本に潰す最小間隔[Hz]
+    picked: list[float] = []
+    for f, _b in cand:
+        if all(abs(f - g) >= min_sep for g in picked):
+            picked.append(f)
+        if len(picked) >= 2:
+            break
+    picked.sort()  # 低い方=F1, 高い方=F2
+    return picked[:n]
 
 
 def classify_vowel(
