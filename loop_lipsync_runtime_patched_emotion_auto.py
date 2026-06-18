@@ -1066,13 +1066,25 @@ def run(args) -> None:
                 return default
             v = [float(x) for x in s.split(",")]
             return EyeBox(v[0], v[1], v[2], v[3])
+        closed_rgb = closed_a = None
+        if args.eye_sprite_dir:
+            from motionpngtuber.eye_blink import load_eye_sprite
+            import os as _os
+            spr = load_eye_sprite(_os.path.join(args.eye_sprite_dir, "closed.png"))
+            if spr is not None:
+                closed_rgb, closed_a = spr
+                print(f"[eye] スプライト合成: {args.eye_sprite_dir}/closed.png")
+            else:
+                print(f"[eye] 警告: {args.eye_sprite_dir}/closed.png が読めず手続き描画にフォールバック")
         eye_overlay = EyeBlinkOverlay(
             left=_parse_box(args.eye_left, EyeBlinkOverlay().left),
             right=_parse_box(args.eye_right, EyeBlinkOverlay().right),
             open_level=args.blink_open, close_level=args.blink_close, swap=args.eye_swap,
+            closed_rgb=closed_rgb, closed_alpha=closed_a,
         )
         eye_rx = EyeTrackReceiver(port=args.eye_udp_port).start()
-        print(f"[eye] UDP まばたき受信 :{args.eye_udp_port} open={args.blink_open} close={args.blink_close} "
+        mode = "スプライト" if closed_rgb is not None else "手続き"
+        print(f"[eye] UDP まばたき受信 :{args.eye_udp_port} 方式={mode} open={args.blink_open} close={args.blink_close} "
               f"(Windowsで pose_server.py --host=<WSL_IP> --port={args.eye_udp_port} を起動)")
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
@@ -1623,6 +1635,7 @@ def parse_args():
     ap.add_argument("--eye-swap", action="store_true", help="左右の目を入れ替える(鏡像補正)")
     ap.add_argument("--eye-left", default="", help="左目box 'cx,cy,hw,hh'(base1280基準)。空=既定")
     ap.add_argument("--eye-right", default="", help="右目box 'cx,cy,hw,hh'。空=既定")
+    ap.add_argument("--eye-sprite-dir", default="", help="ComfyUI生成の閉じ目スプライト(closed.png)があるフォルダ。指定で手続き描画よりスプライト合成を優先")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")

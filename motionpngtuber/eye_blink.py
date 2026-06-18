@@ -15,6 +15,19 @@ import cv2
 import numpy as np
 
 
+def load_eye_sprite(path: str):
+    """RGBA の閉じ目スプライトを (RGB, alpha float0..1) で読む。無ければ None。"""
+    import os
+    if not path or not os.path.isfile(path):
+        return None
+    bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if bgra is None or bgra.shape[2] < 4:
+        return None
+    rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
+    alpha = bgra[:, :, 3].astype(np.float32) / 255.0
+    return rgb, alpha
+
+
 @dataclass
 class EyeBox:
     cx: float
@@ -84,7 +97,10 @@ class EyeBlinkOverlay:
                  open_level: float = 0.25, close_level: float = 0.6,
                  ref_center: tuple[float, float] | None = None,
                  swap: bool = False,
-                 skin_pt: tuple[float, float] = (625.0, 455.0)) -> None:
+                 skin_pt: tuple[float, float] = (625.0, 455.0),
+                 closed_rgb: np.ndarray | None = None,
+                 closed_alpha: np.ndarray | None = None,
+                 split_x: float = 611.0) -> None:
         self.left = left
         self.right = right
         self.open_level = open_level
@@ -92,6 +108,11 @@ class EyeBlinkOverlay:
         self.ref_center = ref_center  # 追従基準(mouth_track中心)
         self.swap = swap
         self.skin_pt = skin_pt  # 肌色採取点(鼻筋)
+        # スプライトモード(ComfyUI閉じ目)。base(1280)基準。Noneなら手続き描画。
+        self._closed_rgb0 = closed_rgb           # (H,W,3) RGB
+        self._closed_a0 = closed_alpha           # (H,W) float 0..1
+        self.split_x = split_x                   # 左右目の分割x(base座標)
+        self._fit_cache: dict = {}
 
     def _norm(self, raw: float) -> float:
         if self.close_level <= self.open_level:
@@ -101,8 +122,42 @@ class EyeBlinkOverlay:
     def _shift(self, box: EyeBox, dx: float, dy: float) -> EyeBox:
         return EyeBox(box.cx + dx, box.cy + dy, box.hw, box.hh)
 
+    def _fit(self, w: int, h: int):
+        """スプライトをフレーム解像度に合わせ、左右半分のα(0..1)とbboxをキャッシュ。"""
+        key = (w, h)
+        c = self._fit_cache.get(key)
+        if c is not None:
+            return c
+        rgb = cv2.resize(self._closed_rgb0, (w, h), interpolation=cv2.INTER_AREA)
+        a = cv2.resize(self._closed_a0, (w, h), interpolation=cv2.INTER_AREA)
+        sx = int(self.split_x * w / 1280.0)
+        aL = a.copy(); aL[:, sx:] = 0.0
+        aR = a.copy(); aR[:, :sx] = 0.0
+        ys, xs = np.where(a > 0.004)
+        if ys.size:
+            bbox = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+        else:
+            bbox = (0, 0, w, h)
+        c = (rgb, aL, aR, bbox)
+        self._fit_cache[key] = c
+        return c
+
+    def _draw_sprite(self, frame: np.ndarray, bl: float, br: float) -> None:
+        h, w = frame.shape[:2]
+        rgb, aL, aR, (x0, y0, x1, y1) = self._fit(w, h)
+        A = np.clip(aL[y0:y1, x0:x1] * bl + aR[y0:y1, x0:x1] * br, 0.0, 1.0)[:, :, None]
+        sub = frame[y0:y1, x0:x1].astype(np.float32)
+        spr = rgb[y0:y1, x0:x1].astype(np.float32)
+        frame[y0:y1, x0:x1] = (sub * (1.0 - A) + spr * A).astype(np.uint8)
+
     def draw(self, frame: np.ndarray, blink_l: float, blink_r: float,
              cur_center: tuple[float, float] | None = None) -> None:
+        if self._closed_rgb0 is not None:
+            bl, br = self._norm(blink_l), self._norm(blink_r)
+            if self.swap:
+                bl, br = br, bl
+            self._draw_sprite(frame, bl, br)
+            return
         h, w = frame.shape[:2]
         s = w / 1280.0  # 目座標は base_face(1280幅)基準。フレーム解像度に合わせる
         dx = dy = 0.0
