@@ -33,12 +33,12 @@ CKPT = "ill\\obsessionIllustrious_vPredV11.safetensors"
 
 # 目の表情ごとの追加プロンプト
 STATES = {
-    "closed":   "(closed eyes:1.35), eyes closed, ^_^, gentle smile, eyelid, eyelashes, smooth skin",
+    "closed":   "(closed eyes:1.45), eyes closed, ^_^, closed eye smile, eyelid, eyelashes, smooth skin",
     "half":     "(half-closed eyes:1.3), sleepy half-lidded eyes, droopy eyes",
 }
 
 # base_face(1280x960) で実測した目box: (cx,cy,hw,hh)
-EYES = [(487, 408, 92, 64), (735, 408, 92, 64)]  # マスクは少し大きめ
+EYES = [(486, 428, 114, 80), (742, 428, 114, 80)]  # ループ実測で目全体をカバー(外角まで)
 
 
 def build_mask(w: int, h: int, only: int | None = None) -> np.ndarray:

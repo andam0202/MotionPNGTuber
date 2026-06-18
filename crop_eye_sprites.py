@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 # base_face(1280x960) の目box (cx,cy,hw,hh)。合成αはまつ毛も含め少し大きめ。
-EYES = [(487, 408, 96, 70), (735, 408, 96, 70)]
+EYES = [(486, 428, 114, 80), (742, 428, 114, 80)]  # ループ実測で目全体をカバー(外角まで)
 
 
 def build_alpha(w: int, h: int, feather: int = 21) -> np.ndarray:

@@ -36,9 +36,9 @@ class EyeBox:
     hh: float  # half height
 
 
-# gura base_face(1280x960) で実測した既定の目領域
-DEFAULT_LEFT = EyeBox(487.0, 408.0, 80.0, 54.0)   # 視聴者から見て左
-DEFAULT_RIGHT = EyeBox(735.0, 408.0, 80.0, 54.0)  # 視聴者から見て右
+# gura loop動画(1280x960)で実測した既定の目領域(crop_eye_sprites.EYESと一致)
+DEFAULT_LEFT = EyeBox(486.0, 428.0, 114.0, 80.0)   # 視聴者から見て左
+DEFAULT_RIGHT = EyeBox(742.0, 428.0, 114.0, 80.0)  # 視聴者から見て右
 
 
 def _sample_skin(frame: np.ndarray, pt: tuple[float, float]) -> list:
@@ -142,19 +142,38 @@ class EyeBlinkOverlay:
         self._fit_cache[key] = c
         return c
 
+    def _lid_col_mask(self, box: EyeBox, b: float, h: int, s: float) -> np.ndarray:
+        """上まぶたが b 分だけ降りた縦マスク(h,1)。lid より上=1(閉じ目を表示)、下=0(開いた元目)。
+
+        半透明クロスフェードではなく、閉じ目画像を上から不透明に被せる「縦ワイプ」。
+        各画素は閉/開のどちらか一方になり、二重像(ゴースト)が出ない。境界は数pxだけ
+        馴染ませる。
+        """
+        top = (box.cy - box.hh) * s
+        bot = (box.cy + box.hh) * s
+        lid = top + b * (bot - top)
+        ys = np.arange(h, dtype=np.float32)[:, None]
+        feather = max(2.0, (bot - top) * 0.04)
+        return np.clip((lid - ys) / feather, 0.0, 1.0)
+
     def _draw_sprite(self, frame: np.ndarray, bl: float, br: float,
                      dx: float = 0.0, dy: float = 0.0) -> None:
         h, w = frame.shape[:2]
+        s = w / 1280.0
         rgb, aL, aR, (x0, y0, x1, y1) = self._fit(w, h)
         dxi, dyi = int(round(dx)), int(round(dy))  # 頭の動きにスプライトを平行追従
-        # 合成先(dest)= スプライトbboxを(dx,dy)平行移動。フレーム内にクリップ。
         cx0, cy0 = max(0, x0 + dxi), max(0, y0 + dyi)
         cx1, cy1 = min(w, x1 + dxi), min(h, y1 + dyi)
         if cx1 <= cx0 or cy1 <= cy0:
             return
-        sx0, sy0 = cx0 - dxi, cy0 - dyi  # 対応するスプライト元領域
+        sx0, sy0 = cx0 - dxi, cy0 - dyi
         sx1, sy1 = cx1 - dxi, cy1 - dyi
-        A = np.clip(aL[sy0:sy1, sx0:sx1] * bl + aR[sy0:sy1, sx0:sx1] * br, 0.0, 1.0)[:, :, None]
+        # 左右それぞれ、まぶたが降りた高さまで閉じ目を不透明に被せる
+        lbox = self._shift(self.left, dx, dy)
+        rbox = self._shift(self.right, dx, dy)
+        mL = self._lid_col_mask(lbox, bl, h, s)[sy0:sy1]
+        mR = self._lid_col_mask(rbox, br, h, s)[sy0:sy1]
+        A = np.clip(aL[sy0:sy1, sx0:sx1] * mL + aR[sy0:sy1, sx0:sx1] * mR, 0.0, 1.0)[:, :, None]
         sub = frame[cy0:cy1, cx0:cx1].astype(np.float32)
         spr = rgb[sy0:sy1, sx0:sx1].astype(np.float32)
         frame[cy0:cy1, cx0:cx1] = (sub * (1.0 - A) + spr * A).astype(np.uint8)
