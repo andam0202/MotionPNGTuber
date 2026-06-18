@@ -83,6 +83,7 @@ from motionpngtuber.lipsync_core import (
     EMOJI_BY_LABEL,
 )
 from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape, load_calib
+from motionpngtuber.vowel_mfcc import extract_feature as mfcc_extract, load_model as mfcc_load
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
@@ -1042,11 +1043,17 @@ def run(args) -> None:
     peak_decay = 0.995
     silence_gate_rms = args.silence_gate  # サイレンスゲート閾値
     rms_smooth_q = deque(maxlen=3)
-    raw_buf: deque[np.ndarray] = deque(maxlen=4)  # formant母音判定用の生波形窓(約40ms)
+    raw_buf: deque[np.ndarray] = deque(maxlen=6)  # 母音判定用の生波形窓(約60ms)
     vowel_hist: deque[str] = deque(maxlen=5)      # 母音の多数決スムージング用
     formant_calib = load_calib(args.formant_calib) if args.lipsync_mode == "formant" else None
     if args.lipsync_mode == "formant":
         print(f"[formant] calib: {'loaded ' + args.formant_calib if formant_calib else 'なし(標準テーブル使用)'}")
+    mfcc_model = mfcc_load(args.mfcc_model) if args.lipsync_mode == "mfcc" else None
+    if args.lipsync_mode == "mfcc":
+        if mfcc_model is None:
+            print(f"[mfcc] ERROR: モデル {args.mfcc_model} が読めません。train_vowel_mfcc.py で学習してください。")
+        else:
+            print(f"[mfcc] model: {args.mfcc_model} 母音={mfcc_model.labels} k={mfcc_model.k}")
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
     cent_hist = deque(maxlen=args.audio_hz * args.hist_sec)
@@ -1247,7 +1254,7 @@ def run(args) -> None:
                         break
 
                 for rms_raw, cent, xchunk in items:
-                    if args.lipsync_mode == "formant":
+                    if args.lipsync_mode in ("formant", "mfcc"):
                         raw_buf.append(xchunk)
                     if rms_raw < noise + 0.0005:
                         noise = 0.99 * noise + 0.01 * rms_raw
@@ -1319,6 +1326,31 @@ def run(args) -> None:
                             keys = set(mouth.keys())
                             sh = vowel_to_shape(vowel, keys)
                             # 開度が小さい(half)ときは母音形を控えめにhalfへ寄せる
+                            if mouth_level == "half" and sh in ("aa", "open"):
+                                sh = "half" if "half" in keys else sh
+                            mouth_shape_now = sh
+                        e_prev2, e_prev1 = e_prev1, env
+                        continue
+
+                    # ---- mfcc モード: 学習済みkNNで母音(あ/い/う/え/お)を判定 ----
+                    if args.lipsync_mode == "mfcc":
+                        if mouth_level == "closed" or mfcc_model is None:
+                            mouth_shape_now = "closed"
+                            vowel_hist.clear()
+                        else:
+                            win = (
+                                np.concatenate(list(raw_buf))
+                                if len(raw_buf) > 0 else xchunk
+                            )
+                            feat = mfcc_extract(win, samplerate)
+                            vowel, conf = mfcc_model.predict(feat) if feat is not None else (None, 0.0)
+                            # 信頼度が低い判定は採用せず直近を維持（揺れ防止）
+                            if vowel is not None and conf >= args.mfcc_min_conf:
+                                vowel_hist.append(vowel)
+                            if vowel_hist:
+                                vowel = Counter(vowel_hist).most_common(1)[0][0]
+                            keys = set(mouth.keys())
+                            sh = vowel_to_shape(vowel, keys)
                             if mouth_level == "half" and sh in ("aa", "open"):
                                 sh = "half" if "half" in keys else sh
                             mouth_shape_now = sh
@@ -1541,14 +1573,18 @@ def parse_args():
     ap.add_argument("--full-h", type=int, default=2560)
     ap.add_argument("--preview-scale", type=float, default=1.0)
 
-    ap.add_argument("--render-fps", type=int, default=30)
+    ap.add_argument("--render-fps", type=int, default=60)
     ap.add_argument("--audio-hz", type=int, default=100)
     ap.add_argument("--cutoff-hz", type=float, default=8.0)
     ap.add_argument("--blend-frames", type=int, default=3, help="口形状切替のαブレンドフレーム数(0=無効、滑らかな切替)")
-    ap.add_argument("--lipsync-mode", default="level", choices=["level", "formant"],
-                    help="level=音量3段階+centroid母音 / formant=LPCフォルマントで あ/い/う/え/お 判定")
+    ap.add_argument("--lipsync-mode", default="level", choices=["level", "formant", "mfcc"],
+                    help="level=音量3段階+centroid母音 / formant=LPCフォルマント / mfcc=学習済みkNN母音判定")
     ap.add_argument("--formant-calib", default="formant_calib.json",
                     help="calibrate_formant.py が出力した個人化フォルマントJSON（あれば自動読込）")
+    ap.add_argument("--mfcc-model", default="vowel_mfcc.npz",
+                    help="train_vowel_mfcc.py が出力した母音kNNモデル（mfccモードで自動読込）")
+    ap.add_argument("--mfcc-min-conf", type=float, default=0.45,
+                    help="mfccモードで採用する最小信頼度(0..1)。低い判定は直近を維持")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
