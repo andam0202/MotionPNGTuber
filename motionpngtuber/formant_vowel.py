@@ -118,9 +118,10 @@ def estimate_formants(
     """音声チャンクから F1, F2 を推定して返す（取れない要素は省く）。
 
     F1 は必ず最低域のフォルマント（前舌母音で~300、開母音で~850）。実声では
-    F1 のバンド幅が広いので、F1 は「低域[200,1100]の最低周波数の極」で取り、
-    F2 は「F1+250 より上で最も鋭い(共鳴が強い)極」で取る。偽極(F1/F2間)は
-    バンド幅が広く F2 で負ける。ダウンサンプル前提。
+    F1 のバンド幅が広いので、F1 は「低域[200,1100]の最低周波数の極」で取る。
+    F2 は「F1+250 より上で十分鋭い(bw<閾値)極のうち最も低いもの」=最初の本物の
+    共鳴。後舌母音(お/う)の低く幅広い F2 を、高域の F3/偽極より優先して拾える。
+    ダウンサンプル前提。
     """
     poles = _all_poles(x, sr, order, max_bw_hz)
     if not poles:
@@ -133,11 +134,13 @@ def estimate_formants(
     f1 = (min(low, key=lambda p: p[0]) if low else min(cand, key=lambda p: p[0]))[0]
     if n < 2:
         return [f1]
-    # F2: F1+250 より上で最も鋭い極（最も弱いバンド幅）。
     high = [(f, b) for f, b in cand if f1 + 250.0 <= f <= 3200.0]
     if not high:
         return [f1]
-    f2 = min(high, key=lambda p: p[1])[0]
+    # F2: 十分鋭い極のうち最も低いもの（=最初の共鳴）。無ければ全体で最も鋭い極。
+    bw_thr = 260.0
+    sharp = [(f, b) for f, b in high if b < bw_thr]
+    f2 = (min(sharp, key=lambda p: p[0]) if sharp else min(high, key=lambda p: p[1]))[0]
     return [f1, f2]
 
 
