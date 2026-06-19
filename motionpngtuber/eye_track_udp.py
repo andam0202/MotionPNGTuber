@@ -27,6 +27,9 @@ class EyeTrackReceiver:
         self._blink_r = 0.0
         self._look_x = 0.0   # +右 / -左（被写体視点）
         self._look_y = 0.0   # +上 / -下
+        self._yaw = 0.0      # 頭の向き(度)
+        self._pitch = 0.0
+        self._roll = 0.0
         self._last_face_t = 0.0   # 最後に face を受けた時刻
         self._last_pkt_t = 0.0    # 最後に何かを受けた時刻
         self._sock: socket.socket | None = None
@@ -59,6 +62,12 @@ class EyeTrackReceiver:
                 pkt = json.loads(data.decode("utf-8"))
             except Exception:
                 continue
+            head = pkt.get("head")
+            if head:
+                with self._lock:
+                    self._yaw = float(head.get("yaw", 0.0))
+                    self._pitch = float(head.get("pitch", 0.0))
+                    self._roll = float(head.get("roll", 0.0))
             face = pkt.get("face")
             if not face:
                 continue
@@ -83,6 +92,11 @@ class EyeTrackReceiver:
     def get_look(self) -> tuple[float, float]:
         with self._lock:
             return self._look_x, self._look_y
+
+    def get_head(self) -> tuple[float, float, float]:
+        """頭の (yaw, pitch, roll) 度。"""
+        with self._lock:
+            return self._yaw, self._pitch, self._roll
 
     def connected(self, timeout: float = 1.0) -> bool:
         return (time.time() - self._last_pkt_t) < timeout if self._last_pkt_t else False
@@ -110,10 +124,10 @@ def _main() -> int:
             time.sleep(0.1)
             bl, br, age = rx.get_blink()
             lx, ly = rx.get_look()
+            yaw, pitch, roll = rx.get_head()
             status = "OK" if age < 1.0 else f"(face未受信 {age:.0f}s)"
-            bar_l = "#" * int(bl * 20)
-            bar_r = "#" * int(br * 20)
-            print(f"\r blinkL={bl:.2f}[{bar_l:<20}] R={br:.2f}[{bar_r:<20}] look=({lx:+.2f},{ly:+.2f}) {status}   ",
+            print(f"\r blinkL={bl:.2f} R={br:.2f} look=({lx:+.2f},{ly:+.2f}) "
+                  f"head=yaw{yaw:+.0f} pitch{pitch:+.0f} roll{roll:+.0f} {status}   ",
                   end="", flush=True)
     except KeyboardInterrupt:
         print("\n[eye-rx] stop")
