@@ -25,6 +25,9 @@ import numpy as np
 
 from motionpngtuber.eye_track_udp import EyeTrackReceiver
 
+# 母音→口スプライト(MFCC音声リップシンク用)
+VOWEL_TO_SPRITE = {"a": "aa", "i": "e", "u": "u", "e": "e", "o": "o"}
+
 ST = "/mnt/c/Users/mao0202/Documents/GitHub/see-through/data/output_marigold/gura_base"
 Y_OFF = 160
 
@@ -104,6 +107,58 @@ def load_mouth_states(rs: float):
     return states
 
 
+class AudioMouth:
+    """マイク音声→MFCC母音→口スプライト名(あ/い/う/え/お)。カメラ口トラッキングの代替。"""
+
+    def __init__(self, device=4, model_path="vowel_mfcc.npz", gate=0.012):
+        import queue as _q
+        import sounddevice as sd
+        from collections import deque, Counter
+        from motionpngtuber.vowel_mfcc import extract_feature, load_model
+        self._sd = sd; self._Counter = Counter
+        self._extract = extract_feature
+        self.model = load_model(model_path)
+        self.gate = gate
+        self.shape = "closed"
+        self._buf = deque(maxlen=6)
+        self._hist = deque(maxlen=5)
+        dev = sd.query_devices(device, "input")
+        self.sr = int(dev["default_samplerate"])
+        self._q = _q.Queue(maxsize=8)
+        hop = int(self.sr / 100)
+
+        def cb(indata, frames, t, status):
+            try:
+                self._q.put_nowait(indata[:, 0].copy())
+            except _q.Full:
+                pass
+        self._stream = sd.InputStream(samplerate=self.sr, channels=1, blocksize=hop,
+                                      dtype="float32", callback=cb, device=device, latency="low")
+
+    def start(self):
+        import threading
+        self._stream.start()
+        threading.Thread(target=self._loop, daemon=True).start()
+        return self
+
+    def _loop(self):
+        import numpy as _np
+        while True:
+            x = self._q.get()
+            rms = float(_np.sqrt(_np.mean(x ** 2)))
+            self._buf.append(x)
+            if rms < self.gate or self.model is None:
+                self.shape = "closed"; self._hist.clear(); continue
+            win = _np.concatenate(list(self._buf))
+            feat = self._extract(win, self.sr)
+            v, conf = self.model.predict(feat) if feat is not None else (None, 0.0)
+            if v is not None and conf >= 0.4:
+                self._hist.append(v)
+            if self._hist:
+                v = self._Counter(self._hist).most_common(1)[0][0]
+                self.shape = VOWEL_TO_SPRITE.get(v, "aa")
+
+
 def pick_mouth(jaw, pucker, funnel, smile, gain, states):
     """口ブレンドシェイプ→母音口形(closed/half/aa/u/o/e)。フェイストラッキングの口形を反映。"""
     jg = jaw * gain
@@ -176,6 +231,10 @@ def main() -> int:
     ap.add_argument("--render-scale", type=float, default=0.55, help="描画解像度(小=速い)")
     ap.add_argument("--mouth-gain", type=float, default=1.8, help="jawOpen→口開き倍率")
     ap.add_argument("--blink-thresh", type=float, default=0.42, help="この正規化blink以上で閉眼にきちっと切替")
+    ap.add_argument("--mouth-source", default="audio", choices=["audio", "camera"],
+                    help="audio=マイクMFCCで母音口形(既定) / camera=webカメラjawOpen")
+    ap.add_argument("--device", type=int, default=4, help="マイクデバイス(audio時)")
+    ap.add_argument("--mfcc-model", default="vowel_mfcc.npz", help="MFCC母音モデル(audio時)")
     ap.add_argument("--bg", default="245,240,240")  # BGR
     args = ap.parse_args()
 
@@ -206,6 +265,15 @@ def main() -> int:
     eye_cy_r = EYE_CY * rs
 
     rx = EyeTrackReceiver(port=args.port).start()
+    audio_mouth = None
+    if args.mouth_source == "audio":
+        try:
+            audio_mouth = AudioMouth(device=args.device, model_path=args.mfcc_model).start()
+            print(f"[live2d] 口=音声MFCC(device{args.device}, model={args.mfcc_model})")
+        except Exception as ex:
+            print(f"[live2d] 音声口パク初期化失敗({ex})→カメラjawにフォールバック")
+    if audio_mouth is None:
+        print("[live2d] 口=webカメラ jawOpen")
     print(f"[live2d] 頭ポーズ受信 :{args.port}  q で終了")
     sy = sp = sr = sbl = 0.0
     sjaw = spuck = sfun = ssmi = 0.0
@@ -223,7 +291,10 @@ def main() -> int:
         sbl += e * (blink - sbl)
         sjaw += e * (jaw - sjaw); spuck += e * (pucker - spuck)
         sfun += e * (funnel - sfun); ssmi += e * (smile - ssmi)
-        mouth_name = pick_mouth(sjaw, spuck, sfun, ssmi, args.mouth_gain, mouth_states)
+        if audio_mouth is not None:
+            mouth_name = audio_mouth.shape if audio_mouth.shape in mouth_states else "closed"
+        else:
+            mouth_name = pick_mouth(sjaw, spuck, sfun, ssmi, args.mouth_gain, mouth_states)
         # 閉眼を離散切替(ヒステリシスでチラつき防止)
         if eye_is_closed:
             eye_is_closed = sbl > (args.blink_thresh - 0.12)
@@ -238,10 +309,11 @@ def main() -> int:
                 ms = mouth_states.get(mouth_name)
                 if ms is None:
                     continue
-                if mouth_name == "closed":
+                if mouth_name == "closed" or audio_mouth is not None:
+                    # 音声モード=各母音の口形をそのまま割り当て(離散)
                     _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)
                 else:
-                    # 開き量を jaw で連続スケール(段階切替でなく滑らかに開閉)
+                    # カメラモード=開き量を jaw で連続スケール
                     of = float(np.clip(sjaw * args.mouth_gain, 0.30, 1.0))
                     r2, a2 = _vscale_top(ms.rgb, ms.a, of)
                     _blend(canvas, r2, a2, ms.x0 + dx, ms.y0 + dy)
