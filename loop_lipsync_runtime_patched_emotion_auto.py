@@ -1071,14 +1071,14 @@ def run(args) -> None:
             return EyeBox(v[0], v[1], v[2], v[3])
         import os as _os
         from motionpngtuber.eye_blink import load_layer
-        sd = args.eye_sprite_dir
-        eyeless = load_layer(_os.path.join(sd, "eyeless.png")) if sd else None
-        open_eye = load_layer(_os.path.join(sd, "open.png")) if sd else None
-        closed = load_layer(_os.path.join(sd, "closed.png")) if sd else None
+        eye_dir = args.eye_sprite_dir
+        eyeless = None if args.eye_base_eyeless else (load_layer(_os.path.join(eye_dir, "eyeless.png")) if eye_dir else None)
+        open_eye = load_layer(_os.path.join(eye_dir, "open.png")) if eye_dir else None
+        closed = load_layer(_os.path.join(eye_dir, "closed.png")) if eye_dir else None
         if open_eye is None or closed is None:
-            print(f"[eye] ERROR: {sd}/open.png か closed.png が読めません。build_eye_assets.py / gen_eye_sprites.py を実行してください。")
+            print(f"[eye] ERROR: {eye_dir}/open.png か closed.png が読めません。build_eye_assets.py / gen_eye_sprites.py を実行してください。")
         else:
-            print(f"[eye] 層合成: eyeless={'有' if eyeless else '無'} open=有 closed=有 @{sd}")
+            print(f"[eye] 層合成: eyeless={'有' if eyeless else '無'} open=有 closed=有 @{eye_dir}")
         # 頭の動きに追従させる基準: 口トラックの frame0 中心(base_face=rest pose相当)
         eye_ref_center = None
         try:
@@ -1659,7 +1659,9 @@ def parse_args():
     ap.add_argument("--eye-swap", action="store_true", help="左右の目を入れ替える(鏡像補正)")
     ap.add_argument("--eye-left", default="", help="左目box 'cx,cy,hw,hh'(base1280基準)。空=既定")
     ap.add_argument("--eye-right", default="", help="右目box 'cx,cy,hw,hh'。空=既定")
-    ap.add_argument("--eye-sprite-dir", default="", help="ComfyUI生成の閉じ目スプライト(closed.png)があるフォルダ。指定で手続き描画よりスプライト合成を優先")
+    ap.add_argument("--eye-sprite-dir", default="", help="目素材(eyeless/open/closed.png)があるフォルダ")
+    ap.add_argument("--eye-base-eyeless", action="store_true",
+                    help="ベース動画が既にのっぺらぼう(loop_eyeless)の場合、overlayのeyeless重ねを省く(高速)")
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
     ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
