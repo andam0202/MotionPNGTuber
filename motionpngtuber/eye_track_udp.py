@@ -30,6 +30,7 @@ class EyeTrackReceiver:
         self._yaw = 0.0      # 頭の向き(度)
         self._pitch = 0.0
         self._roll = 0.0
+        self._jaw = 0.0      # 口の開き(jawOpen 0..1)
         self._last_face_t = 0.0   # 最後に face を受けた時刻
         self._last_pkt_t = 0.0    # 最後に何かを受けた時刻
         self._sock: socket.socket | None = None
@@ -78,9 +79,11 @@ class EyeTrackReceiver:
                   + float(face.get("eyeLookInRight", 0.0)) - float(face.get("eyeLookOutRight", 0.0))) * 0.5
             ly = (float(face.get("eyeLookUpLeft", 0.0)) + float(face.get("eyeLookUpRight", 0.0))
                   - float(face.get("eyeLookDownLeft", 0.0)) - float(face.get("eyeLookDownRight", 0.0))) * 0.5
+            jaw = float(face.get("jawOpen", 0.0))
             with self._lock:
                 self._blink_l, self._blink_r = bl, br
                 self._look_x, self._look_y = lx, ly
+                self._jaw = jaw
                 self._last_face_t = now
 
     def get_blink(self) -> tuple[float, float, float]:
@@ -97,6 +100,11 @@ class EyeTrackReceiver:
         """頭の (yaw, pitch, roll) 度。"""
         with self._lock:
             return self._yaw, self._pitch, self._roll
+
+    def get_jaw(self) -> float:
+        """口の開き(jawOpen 0..1)。"""
+        with self._lock:
+            return self._jaw
 
     def connected(self, timeout: float = 1.0) -> bool:
         return (time.time() - self._last_pkt_t) < timeout if self._last_pkt_t else False
