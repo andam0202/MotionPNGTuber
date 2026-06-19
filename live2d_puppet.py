@@ -109,10 +109,9 @@ def pick_mouth(jaw, pucker, funnel, smile, gain, states):
     jg = jaw * gain
     if jg < 0.10 and pucker < 0.30 and funnel < 0.30 and smile < 0.30:
         name = "closed"
-    elif pucker > 0.45:
-        name = "u"
-    elif funnel > 0.40:
-        name = "o"
+    elif pucker > 0.40 or funnel > 0.35:
+        # お(funnel=丸め) と う(pucker=すぼめ) は相関するので大小で判別
+        name = "o" if funnel >= pucker else "u"
     elif jg > 0.50:
         name = "aa"
     elif smile > 0.35:
@@ -174,8 +173,20 @@ def main() -> int:
     if not layers:
         print("ERROR: レイヤーが読めません"); return 1
     mouth_states = load_mouth_states(rs)
+    # 閉じ目イラスト(ComfyUI生成, のっぺらぼう+実位置) を読み込み(rs縮小・bbox切出し)
+    eye_closed = None
+    cp = "/mnt/c/Users/mao0202/Documents/GitHub/MotionPNGTuber/workspace/gura/eye/closed.png"
+    _ce = cv2.imread(cp, cv2.IMREAD_UNCHANGED)
+    if _ce is not None and _ce.shape[2] == 4:
+        if rs != 1.0:
+            _ce = cv2.resize(_ce, None, fx=rs, fy=rs, interpolation=cv2.INTER_AREA)
+        _a = _ce[:, :, 3].astype(np.float32) / 255.0
+        _ys, _xs = np.where(_a > 0.02)
+        if len(_xs):
+            _x0, _x1, _y0, _y1 = _xs.min(), _xs.max() + 1, _ys.min(), _ys.max() + 1
+            eye_closed = (_ce[_y0:_y1, _x0:_x1, :3].astype(np.float32), _a[_y0:_y1, _x0:_x1], _x0, _y0)
     print(f"[live2d] {len(layers)}層 @rs{rs}: {', '.join(l.name for l in layers)}")
-    print(f"[live2d] 口リップシンク: {list(mouth_states)}")
+    print(f"[live2d] 口リップシンク: {list(mouth_states)}  閉じ目イラスト: {'有' if eye_closed else '無'}")
     # canvasサイズ = レイヤーの最大範囲
     H = max(l.y0 + l.a.shape[0] for l in layers)
     W = max(l.x0 + l.a.shape[1] for l in layers)
@@ -213,11 +224,19 @@ def main() -> int:
                 _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)
                 continue
             rgb, a = L.rgb, L.a
-            if L.name in EYE_LAYERS:
-                rgb, a = _squash(rgb, a, sbl, eye_cy_r - L.y0)
             if L.name == "irides":
                 dx += int(round(lx * 18 * rs)); dy += int(round(-ly * 12 * rs))
             _blend(canvas, rgb, a, L.x0 + dx, L.y0 + dy)
+            # まつ毛の後に「閉じ目イラスト」を上から不透明ワイプで降ろす
+            if L.name == "eyelash" and eye_closed is not None and sbl > 0.02:
+                ecr, eca, ex0, ey0 = eye_closed
+                eh = eca.shape[0]
+                lid = max(1, int(sbl * eh))
+                lm = np.zeros((eh, 1), np.float32)
+                fth = max(2, int(eh * 0.08))
+                yy = np.arange(eh)[:, None]
+                lm = np.clip((lid - yy) / fth, 0.0, 1.0).astype(np.float32)
+                _blend(canvas, ecr, eca * lm, ex0 + dx, ey0 + dy)
 
         out = canvas.astype(np.uint8)
         if abs(sr) > 0.5:
