@@ -37,7 +37,7 @@ Z_ORDER = [
     ("eyebrow", 0.5), ("nose", 0.5), ("mouth", 0.5), ("eyewear", 0.52),
     ("headwear", 0.6), ("front hair", 0.8), ("objects", 0.5),
 ]
-EYE_LAYERS = {"eyewhite", "irides"}
+EYE_LAYERS = {"eyewhite", "irides", "eyelash"}  # まつ毛/目輪郭も閉じる
 EYE_CY = 436      # 目領域中心y(1280x960基準)
 # 口リップシンク: ループ用に作った良質な口スプライト(aa=大開き等)を流用
 MOUTH_DIR = "/mnt/c/Users/mao0202/Documents/GitHub/MotionPNGTuber/workspace/gura/mouth"
@@ -81,7 +81,7 @@ def load_mouth_states(rs: float):
     """ループ口スプライト(closed/half/aa)を口アンカーに配置し、Layerとして返す。"""
     states = {}
     ax, ay = MOUTH_ANCHOR[0] * rs, MOUTH_ANCHOR[1] * rs
-    for name in ("closed", "half", "aa"):
+    for name in ("closed", "half", "aa", "u", "o", "e", "open"):
         p = os.path.join(MOUTH_DIR, f"{name}.png")
         if not os.path.isfile(p):
             continue
@@ -102,6 +102,32 @@ def load_mouth_states(rs: float):
         gy = int(ay - (y0c + y1c) / 2)
         states[name] = Layer(name, 0.5, rgb, ac, x0c + gx, y0c + gy)
     return states
+
+
+def pick_mouth(jaw, pucker, funnel, smile, gain, states):
+    """口ブレンドシェイプ→母音口形(closed/half/aa/u/o/e)。フェイストラッキングの口形を反映。"""
+    jg = jaw * gain
+    if jg < 0.10 and pucker < 0.30 and funnel < 0.30 and smile < 0.30:
+        name = "closed"
+    elif pucker > 0.45:
+        name = "u"
+    elif funnel > 0.40:
+        name = "o"
+    elif jg > 0.50:
+        name = "aa"
+    elif smile > 0.35:
+        name = "e"
+    elif jg > 0.18:
+        name = "half"
+    else:
+        name = "closed"
+    if name in states:
+        return name
+    # フォールバック
+    for fb in (name, "half", "aa", "open", "closed"):
+        if fb in states:
+            return fb
+    return next(iter(states), None)
 
 
 def _blend(canvas, rgb, a, x0, y0):
@@ -159,29 +185,29 @@ def main() -> int:
 
     rx = EyeTrackReceiver(port=args.port).start()
     print(f"[live2d] 頭ポーズ受信 :{args.port}  q で終了")
-    sy = sp = sr = sbl = sbr = sjaw = 0.0
+    sy = sp = sr = sbl = 0.0
+    sjaw = spuck = sfun = ssmi = 0.0
     last = time.perf_counter(); fps = 0.0
     win = "live2d puppet (q quit)"
     while True:
         yaw, pitch, roll = rx.get_head()
         bl, br, _ = rx.get_blink()
         lx, ly = rx.get_look()
-        face = None
-        jaw = rx.get_jaw() if hasattr(rx, "get_jaw") else 0.0
-        e = 0.4
+        jaw, pucker, funnel, smile = rx.get_mouth()
+        e = 0.45
         sy += e * (yaw - sy); sp += e * (pitch - sp); sr += e * (roll - sr)
         blink = min(1.0, max(bl, br) * 1.4)
         sbl += e * (blink - sbl)
-        sjaw += e * (min(1.0, jaw * args.mouth_gain) - sjaw)
+        sjaw += e * (jaw - sjaw); spuck += e * (pucker - spuck)
+        sfun += e * (funnel - sfun); ssmi += e * (smile - ssmi)
+        mouth_name = pick_mouth(sjaw, spuck, sfun, ssmi, args.mouth_gain, mouth_states)
 
         canvas = np.empty((H, W, 3), np.float32); canvas[:] = bg
         for L in layers:
             dx = int(round(args.k_yaw * sy * L.depth * rs))
             dy = int(round(args.k_pitch * sp * L.depth * rs))
             if L.name == "mouth" and mouth_states:
-                # see-through口の代わりに jaw でループ口スプライトを選択
-                ms = mouth_states.get("aa") if sjaw > 0.45 else (
-                    mouth_states.get("half") if sjaw > 0.15 else mouth_states.get("closed"))
+                ms = mouth_states.get(mouth_name)
                 if ms is None:
                     continue
                 _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)

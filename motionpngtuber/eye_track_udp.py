@@ -31,6 +31,9 @@ class EyeTrackReceiver:
         self._pitch = 0.0
         self._roll = 0.0
         self._jaw = 0.0      # 口の開き(jawOpen 0..1)
+        self._pucker = 0.0   # 口すぼめ(う)
+        self._funnel = 0.0   # 口丸め(お)
+        self._smile = 0.0    # 口横引き(い/え)
         self._last_face_t = 0.0   # 最後に face を受けた時刻
         self._last_pkt_t = 0.0    # 最後に何かを受けた時刻
         self._sock: socket.socket | None = None
@@ -80,10 +83,14 @@ class EyeTrackReceiver:
             ly = (float(face.get("eyeLookUpLeft", 0.0)) + float(face.get("eyeLookUpRight", 0.0))
                   - float(face.get("eyeLookDownLeft", 0.0)) - float(face.get("eyeLookDownRight", 0.0))) * 0.5
             jaw = float(face.get("jawOpen", 0.0))
+            pucker = float(face.get("mouthPucker", 0.0))
+            funnel = float(face.get("mouthFunnel", 0.0))
+            smile = 0.5 * (float(face.get("mouthSmileLeft", 0.0)) + float(face.get("mouthSmileRight", 0.0)))
             with self._lock:
                 self._blink_l, self._blink_r = bl, br
                 self._look_x, self._look_y = lx, ly
                 self._jaw = jaw
+                self._pucker, self._funnel, self._smile = pucker, funnel, smile
                 self._last_face_t = now
 
     def get_blink(self) -> tuple[float, float, float]:
@@ -105,6 +112,11 @@ class EyeTrackReceiver:
         """口の開き(jawOpen 0..1)。"""
         with self._lock:
             return self._jaw
+
+    def get_mouth(self) -> tuple[float, float, float, float]:
+        """(jawOpen, pucker(う), funnel(お), smile(い/え)) 0..1。"""
+        with self._lock:
+            return self._jaw, self._pucker, self._funnel, self._smile
 
     def connected(self, timeout: float = 1.0) -> bool:
         return (time.time() - self._last_pkt_t) < timeout if self._last_pkt_t else False
