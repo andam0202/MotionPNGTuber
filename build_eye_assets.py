@@ -66,6 +66,19 @@ def main() -> int:
     open_rgba = np.dstack([open_rgb, (open_a * 255).astype(np.uint8)])
     cv2.imwrite(str(out / "open.png"), open_rgba)
 
+    # --- 閉じ目(キャラ本来のまつ毛を下げて閉じまつ毛にする・画風一致/対称) ---
+    # ComfyUIのinpaintはまつ毛が薄く出るため、see-throughのeyelash層を流用。
+    lash = layers["eyelash"]
+    sh = 35  # まつ毛を下げる量(px)。上まつ毛→閉じ目の位置へ
+    M = np.float32([[1, 0, 0], [0, 1, sh]])
+    la = cv2.warpAffine(lash[:, :, 3].astype(np.float32) / 255.0, M, (face.shape[1], face.shape[0]))
+    lr = cv2.warpAffine(lash[:, :, :3].astype(np.float32), M, (face.shape[1], face.shape[0]))
+    closed_rgb = face[:, :, :3].astype(np.float32).copy()
+    am = la[:, :, None]
+    closed_rgb = (closed_rgb * (1 - am) + lr * am).astype(np.uint8)
+    closed_alpha = cv2.GaussianBlur((eye_a > 0.05).astype(np.uint8) * 255, (13, 13), 0)
+    cv2.imwrite(str(out / "closed.png"), np.dstack([closed_rgb, closed_alpha]))
+
     # --- のっぺらぼう肌パッチ(目領域を膨張+羽根化して消去用に) ---
     em = (eye_a > 0.05).astype(np.uint8) * 255
     if args.erase_dilate > 0:
@@ -78,6 +91,7 @@ def main() -> int:
 
     print(f"=== 保存: {out} ===")
     print(f"  open.png     開き目  非透明{int((open_a>0.05).sum())}px")
+    print(f"  closed.png   閉じ目(まつ毛下げsh{sh})")
     print(f"  eyeless.png  のっぺらぼう肌パッチ 被覆{int((em>10).sum())}px")
     print("ランタイム: --eye-sprite-dir で eyeless.png/open.png/closed.png を使用")
     return 0

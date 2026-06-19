@@ -33,13 +33,13 @@ CKPT = "ill\\obsessionIllustrious_vPredV11.safetensors"
 
 # 目の表情ごとの追加プロンプト
 STATES = {
-    "closed":   "(closed eyes:1.45), eyes closed, ^_^, closed eye smile, eyelid, eyelashes, smooth skin",
+    "closed":   "(closed eyes:1.4), (long eyelashes:1.45), (thick black eyelashes:1.3), closed eyes with visible eyelashes, downturned eyelashes, ^_^",
     "half":     "(half-closed eyes:1.3), sleepy half-lidded eyes, droopy eyes",
     "mouth_open": "(open mouth:1.4), mouth open, teeth, (sharp teeth:1.2), :D",
 }
 
 # base_face(1280x960) で実測した目box: (cx,cy,hw,hh)
-EYES = [(486, 428, 114, 80), (742, 428, 114, 80)]  # ループ実測で目全体をカバー(外角まで)
+EYES = [(468, 435, 110, 66), (838, 438, 110, 66)]  # see-through実位置
 
 
 def build_mask(w: int, h: int, only: int | None = None) -> np.ndarray:

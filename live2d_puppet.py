@@ -107,11 +107,15 @@ def load_mouth_states(rs: float):
 def pick_mouth(jaw, pucker, funnel, smile, gain, states):
     """口ブレンドシェイプ→母音口形(closed/half/aa/u/o/e)。フェイストラッキングの口形を反映。"""
     jg = jaw * gain
-    if jg < 0.10 and pucker < 0.30 and funnel < 0.30 and smile < 0.30:
+    # 実測: この話者は mouthFunnel がほぼ0で、お/う は mouthPucker の大小で分かれる
+    # (お=puck~0.9, う=puck~0.1-0.5)。funnel は補助。
+    pk = max(pucker, funnel)
+    if jg < 0.12 and pk < 0.25 and smile < 0.30:
         name = "closed"
-    elif pucker > 0.40 or funnel > 0.35:
-        # お(funnel=丸め) と う(pucker=すぼめ) は相関するので大小で判別
-        name = "o" if funnel >= pucker else "u"
+    elif pk > 0.62:
+        name = "o"          # 強いすぼめ/丸め = お
+    elif pk > 0.25:
+        name = "u"          # 中程度のすぼめ = う
     elif jg > 0.50:
         name = "aa"
     elif smile > 0.35:
@@ -165,6 +169,7 @@ def main() -> int:
     ap.add_argument("--k-roll", type=float, default=1.0)
     ap.add_argument("--render-scale", type=float, default=0.55, help="描画解像度(小=速い)")
     ap.add_argument("--mouth-gain", type=float, default=1.8, help="jawOpen→口開き倍率")
+    ap.add_argument("--blink-thresh", type=float, default=0.42, help="この正規化blink以上で閉眼にきちっと切替")
     ap.add_argument("--bg", default="245,240,240")  # BGR
     args = ap.parse_args()
 
@@ -198,6 +203,7 @@ def main() -> int:
     print(f"[live2d] 頭ポーズ受信 :{args.port}  q で終了")
     sy = sp = sr = sbl = 0.0
     sjaw = spuck = sfun = ssmi = 0.0
+    eye_is_closed = False  # 離散スイッチ状態(ヒステリシス)
     last = time.perf_counter(); fps = 0.0
     win = "live2d puppet (q quit)"
     while True:
@@ -212,6 +218,11 @@ def main() -> int:
         sjaw += e * (jaw - sjaw); spuck += e * (pucker - spuck)
         sfun += e * (funnel - sfun); ssmi += e * (smile - ssmi)
         mouth_name = pick_mouth(sjaw, spuck, sfun, ssmi, args.mouth_gain, mouth_states)
+        # 閉眼を離散切替(ヒステリシスでチラつき防止)
+        if eye_is_closed:
+            eye_is_closed = sbl > (args.blink_thresh - 0.12)
+        else:
+            eye_is_closed = sbl > args.blink_thresh
 
         canvas = np.empty((H, W, 3), np.float32); canvas[:] = bg
         for L in layers:
@@ -226,13 +237,13 @@ def main() -> int:
             rgb, a = L.rgb, L.a
             if L.name == "irides":
                 dx += int(round(lx * 18 * rs)); dy += int(round(-ly * 12 * rs))
-            if L.name in EYE_LAYERS:
-                a = a * (1.0 - sbl)  # 閉じるほど開き目を薄く(クロスフェード)
+            # 離散スイッチ: 閉眼判定時は開き目層を描かず、閉じ目イラストに切替
+            if L.name in EYE_LAYERS and eye_closed is not None and eye_is_closed:
+                if L.name == "eyelash":
+                    ecr, eca, ex0, ey0 = eye_closed
+                    _blend(canvas, ecr, eca, ex0 + dx, ey0 + dy)
+                continue
             _blend(canvas, rgb, a, L.x0 + dx, L.y0 + dy)
-            # まつ毛の後に閉じ目イラストをフェードイン(開き目とクロスフェード)
-            if L.name == "eyelash" and eye_closed is not None and sbl > 0.02:
-                ecr, eca, ex0, ey0 = eye_closed
-                _blend(canvas, ecr, eca * sbl, ex0 + dx, ey0 + dy)
 
         out = canvas.astype(np.uint8)
         if abs(sr) > 0.5:
