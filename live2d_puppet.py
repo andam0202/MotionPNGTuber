@@ -155,7 +155,7 @@ def main() -> int:
     W = max(l.x0 + l.a.shape[1] for l in layers)
     bg = np.array([int(x) for x in args.bg.split(",")], np.float32)
     pivot = (W / 2, H * 0.85)
-    eye_cy_r, mouth_cy_r = EYE_CY * rs, MOUTH_CY * rs
+    eye_cy_r = EYE_CY * rs
 
     rx = EyeTrackReceiver(port=args.port).start()
     print(f"[live2d] 頭ポーズ受信 :{args.port}  q で終了")
