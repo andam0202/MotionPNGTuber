@@ -1,208 +1,167 @@
-"""手続き的アナログまばたき描画。
+"""まばたき層合成（のっぺらぼう＋開き目＋閉じ目）。
 
-webカメラの eyeBlink 連続値(0..1)で、アバターの目に「上まぶたが降りる」表現を
-重ねる。閉じ目スプライト不要・半目も滑らか。アニメの閉じ目(肌色まぶた＋まつ毛
-カーブ)を近似する。肌色は実フレームからサンプリングするので色調整に追従する。
+see-through で目を分離した素材を使い、ループ動画の上で:
+  1. eyeless パッチで元の目を消す（のっぺらぼう化）
+  2. 開き目スプライトを重ねる（既定の見た目）
+  3. 閉じ目スプライトを上から「不透明縦ワイプ」で降ろす（webカメラの eyeBlink 連続値）
 
-座標は base_face / loop 動画(1280x960)基準。頭の動きは mouth_track の中心移動で
-平行追従する（アイドルループの主動作は平行移動なので十分）。
+半透明クロスフェードではなく、各画素は開/閉のどちらか一方になる縦ワイプなので
+二重像(ゴースト)が出ない。のっぺらぼう土台のため元の虹彩がはみ出すこともない。
+座標は base/loop(1280x960)基準。頭の動きは mouth_track 中心移動で平行追従。
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 
-def load_eye_sprite(path: str):
-    """RGBA の閉じ目スプライトを (RGB, alpha float0..1) で読む。無ければ None。"""
-    import os
+def load_layer(path: str):
+    """RGBA レイヤーを (RGB, alpha float0..1) で読む。無ければ None。"""
     if not path or not os.path.isfile(path):
         return None
     bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    if bgra is None or bgra.shape[2] < 4:
+    if bgra is None:
         return None
-    rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
-    alpha = bgra[:, :, 3].astype(np.float32) / 255.0
+    if bgra.ndim == 3 and bgra.shape[2] == 4:
+        rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
+        alpha = bgra[:, :, 3].astype(np.float32) / 255.0
+    else:
+        rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
+        alpha = np.ones(bgra.shape[:2], np.float32)
     return rgb, alpha
+
+
+# 後方互換（旧名）
+load_eye_sprite = load_layer
 
 
 @dataclass
 class EyeBox:
     cx: float
     cy: float
-    hw: float  # half width
-    hh: float  # half height
+    hw: float
+    hh: float
 
 
-# gura loop動画(1280x960)で実測した既定の目領域(crop_eye_sprites.EYESと一致)
-DEFAULT_LEFT = EyeBox(486.0, 428.0, 114.0, 80.0)   # 視聴者から見て左
-DEFAULT_RIGHT = EyeBox(742.0, 428.0, 114.0, 80.0)  # 視聴者から見て右
-
-
-def _sample_skin(frame: np.ndarray, pt: tuple[float, float]) -> list:
-    """指定点(鼻筋など安定領域)の周辺から肌色の中央値を取る。"""
-    h, w = frame.shape[:2]
-    cx, cy = pt
-    y0 = int(np.clip(cy - 22, 0, h - 1)); y1 = int(np.clip(cy + 22, 1, h))
-    x0 = int(np.clip(cx - 32, 0, w - 1)); x1 = int(np.clip(cx + 32, 1, w))
-    if y1 <= y0 or x1 <= x0:
-        return [232, 230, 198]
-    patch = frame[y0:y1, x0:x1].reshape(-1, 3)
-    return np.median(patch, axis=0).astype(np.uint8).tolist()
-
-
-def _draw_lid(frame: np.ndarray, box: EyeBox, amount: float, skin: list) -> None:
-    """amount(0..1) に応じて上まぶたを楕円マスク内で降ろし、下端にまつ毛を描く。"""
-    if amount <= 0.02:
-        return
-    h, w = frame.shape[:2]
-    x0 = int(max(0, box.cx - box.hw)); x1 = int(min(w, box.cx + box.hw))
-    y0 = int(max(0, box.cy - box.hh)); y1 = int(min(h, box.cy + box.hh))
-    if x1 <= x0 or y1 <= y0:
-        return
-    roi = frame[y0:y1, x0:x1]
-    rh, rw = roi.shape[:2]
-    ecx, ecy = rw / 2.0, rh / 2.0
-    eax, eay = rw / 2.0 - 1, rh / 2.0 - 1
-
-    # 目形の楕円マスク
-    eye_mask = np.zeros((rh, rw), np.uint8)
-    cv2.ellipse(eye_mask, (int(ecx), int(ecy)), (int(eax), int(eay)), 0, 0, 360, 255, -1)
-    # 上から amount 分を覆う帯
-    lid_row = int(amount * rh)
-    band = np.zeros((rh, rw), np.uint8)
-    band[:lid_row, :] = 255
-    cover = cv2.bitwise_and(eye_mask, band) > 0
-    if cover.any():
-        roi[cover] = skin
-
-    # まつ毛: 楕円の lid_row 位置での弦に沿って、中央が少し下がるカーブ
-    yy = (lid_row - ecy) / max(1e-3, eay)
-    half = eax * float(np.sqrt(max(0.0, 1.0 - yy * yy))) if abs(yy) < 1.0 else eax * 0.3
-    lx0 = int(ecx - half); lx1 = int(ecx + half)
-    dip = int(rh * 0.10)
-    thick = max(2, int(box.hh * 0.11))
-    pts = np.array([[lx0, lid_row - dip // 2],
-                    [int(ecx), min(rh - 1, lid_row + dip)],
-                    [lx1, lid_row - dip // 2]], np.int32)
-    cv2.polylines(roi, [pts], False, (40, 35, 45), thick, cv2.LINE_AA)
+# gura loop(1280x960)実測の目領域（縦ワイプのまぶた範囲＆左右分割に使用）
+DEFAULT_LEFT = EyeBox(486.0, 428.0, 114.0, 80.0)
+DEFAULT_RIGHT = EyeBox(742.0, 428.0, 114.0, 80.0)
 
 
 class EyeBlinkOverlay:
-    """まばたきオーバーレイ。生 eyeBlink を open/close レンジで 0..1 に正規化して描く。"""
+    """のっぺらぼう＋開き目＋閉じ目の層合成によるまばたき。"""
 
-    def __init__(self, left: EyeBox = DEFAULT_LEFT, right: EyeBox = DEFAULT_RIGHT,
+    def __init__(self, eyeless=None, open_eye=None, closed=None,
+                 left: EyeBox = DEFAULT_LEFT, right: EyeBox = DEFAULT_RIGHT,
                  open_level: float = 0.25, close_level: float = 0.6,
                  ref_center: tuple[float, float] | None = None,
-                 swap: bool = False,
-                 skin_pt: tuple[float, float] = (625.0, 455.0),
-                 closed_rgb: np.ndarray | None = None,
-                 closed_alpha: np.ndarray | None = None,
-                 split_x: float = 611.0) -> None:
+                 swap: bool = False, split_x: float = 614.0) -> None:
+        self._eyeless0 = eyeless    # (rgb, a) 目消し肌
+        self._open0 = open_eye      # (rgb, a) 開き目
+        self._closed0 = closed      # (rgb, a) 閉じ目
         self.left = left
         self.right = right
         self.open_level = open_level
         self.close_level = close_level
-        self.ref_center = ref_center  # 追従基準(mouth_track中心)
+        self.ref_center = ref_center
         self.swap = swap
-        self.skin_pt = skin_pt  # 肌色採取点(鼻筋)
-        # スプライトモード(ComfyUI閉じ目)。base(1280)基準。Noneなら手続き描画。
-        self._closed_rgb0 = closed_rgb           # (H,W,3) RGB
-        self._closed_a0 = closed_alpha           # (H,W) float 0..1
-        self.split_x = split_x                   # 左右目の分割x(base座標)
-        self._fit_cache: dict = {}
+        self.split_x = split_x
+        self._cache: dict = {}
+
+    def has_layers(self) -> bool:
+        return self._open0 is not None and self._closed0 is not None
 
     def _norm(self, raw: float) -> float:
         if self.close_level <= self.open_level:
             return float(np.clip(raw, 0.0, 1.0))
         return float(np.clip((raw - self.open_level) / (self.close_level - self.open_level), 0.0, 1.0))
 
-    def _shift(self, box: EyeBox, dx: float, dy: float) -> EyeBox:
-        return EyeBox(box.cx + dx, box.cy + dy, box.hw, box.hh)
-
     def _fit(self, w: int, h: int):
-        """スプライトをフレーム解像度に合わせ、左右半分のα(0..1)とbboxをキャッシュ。"""
-        key = (w, h)
-        c = self._fit_cache.get(key)
+        """各層をフレーム解像度に合わせ、bbox・左右列マスクをキャッシュ。"""
+        c = self._cache.get((w, h))
         if c is not None:
             return c
-        rgb = cv2.resize(self._closed_rgb0, (w, h), interpolation=cv2.INTER_AREA)
-        a = cv2.resize(self._closed_a0, (w, h), interpolation=cv2.INTER_AREA)
-        sx = int(self.split_x * w / 1280.0)
-        aL = a.copy(); aL[:, sx:] = 0.0
-        aR = a.copy(); aR[:, :sx] = 0.0
-        ys, xs = np.where(a > 0.004)
+        s = w / 1280.0
+
+        def rs(layer):
+            if layer is None:
+                return None
+            rgb = cv2.resize(layer[0], (w, h), interpolation=cv2.INTER_AREA)
+            a = cv2.resize(layer[1], (w, h), interpolation=cv2.INTER_AREA)
+            return rgb, a
+
+        eyeless, open_e, closed = rs(self._eyeless0), rs(self._open0), rs(self._closed0)
+        # 目領域 bbox（開き+閉じ+消しのα和）
+        acc = np.zeros((h, w), np.float32)
+        for L in (eyeless, open_e, closed):
+            if L is not None:
+                acc = np.maximum(acc, L[1])
+        ys, xs = np.where(acc > 0.02)
         if ys.size:
-            bbox = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+            bbox = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
         else:
             bbox = (0, 0, w, h)
-        c = (rgb, aL, aR, bbox)
-        self._fit_cache[key] = c
+        sx = self.split_x * s
+        c = dict(s=s, eyeless=eyeless, open=open_e, closed=closed, bbox=bbox, split=sx)
+        self._cache[(w, h)] = c
         return c
 
-    def _lid_col_mask(self, box: EyeBox, b: float, h: int, s: float) -> np.ndarray:
-        """上まぶたが b 分だけ降りた縦マスク(h,1)。lid より上=1(閉じ目を表示)、下=0(開いた元目)。
-
-        半透明クロスフェードではなく、閉じ目画像を上から不透明に被せる「縦ワイプ」。
-        各画素は閉/開のどちらか一方になり、二重像(ゴースト)が出ない。境界は数pxだけ
-        馴染ませる。
-        """
-        top = (box.cy - box.hh) * s
-        bot = (box.cy + box.hh) * s
+    def _lid(self, box: EyeBox, b: float, ys: np.ndarray, s: float, dy: float) -> np.ndarray:
+        """まぶた縦マスク: lid_y より上=1(閉じ目を出す), 下=0。ys は行座標配列。"""
+        top = (box.cy - box.hh) * s + dy
+        bot = (box.cy + box.hh) * s + dy
         lid = top + b * (bot - top)
-        ys = np.arange(h, dtype=np.float32)[:, None]
         feather = max(2.0, (bot - top) * 0.04)
         return np.clip((lid - ys) / feather, 0.0, 1.0)
 
-    def _draw_sprite(self, frame: np.ndarray, bl: float, br: float,
-                     dx: float = 0.0, dy: float = 0.0) -> None:
+    @staticmethod
+    def _comp(frame: np.ndarray, rgb: np.ndarray, a: np.ndarray,
+              bbox, dxi: int, dyi: int) -> None:
+        """rgb を alpha a で frame に合成（(dxi,dyi)平行移動、bbox領域のみ）。"""
         h, w = frame.shape[:2]
-        s = w / 1280.0
-        rgb, aL, aR, (x0, y0, x1, y1) = self._fit(w, h)
-        dxi, dyi = int(round(dx)), int(round(dy))  # 頭の動きにスプライトを平行追従
+        x0, y0, x1, y1 = bbox
         cx0, cy0 = max(0, x0 + dxi), max(0, y0 + dyi)
         cx1, cy1 = min(w, x1 + dxi), min(h, y1 + dyi)
         if cx1 <= cx0 or cy1 <= cy0:
             return
-        sx0, sy0 = cx0 - dxi, cy0 - dyi
-        sx1, sy1 = cx1 - dxi, cy1 - dyi
-        # 左右それぞれ、まぶたが降りた高さまで閉じ目を不透明に被せる
-        lbox = self._shift(self.left, dx, dy)
-        rbox = self._shift(self.right, dx, dy)
-        mL = self._lid_col_mask(lbox, bl, h, s)[sy0:sy1]
-        mR = self._lid_col_mask(rbox, br, h, s)[sy0:sy1]
-        A = np.clip(aL[sy0:sy1, sx0:sx1] * mL + aR[sy0:sy1, sx0:sx1] * mR, 0.0, 1.0)[:, :, None]
+        sx0, sy0, sx1, sy1 = cx0 - dxi, cy0 - dyi, cx1 - dxi, cy1 - dyi
+        A = a[sy0:sy1, sx0:sx1][:, :, None]
         sub = frame[cy0:cy1, cx0:cx1].astype(np.float32)
         spr = rgb[sy0:sy1, sx0:sx1].astype(np.float32)
         frame[cy0:cy1, cx0:cx1] = (sub * (1.0 - A) + spr * A).astype(np.uint8)
 
     def draw(self, frame: np.ndarray, blink_l: float, blink_r: float,
              cur_center: tuple[float, float] | None = None) -> None:
-        if self._closed_rgb0 is not None:
-            bl, br = self._norm(blink_l), self._norm(blink_r)
-            if self.swap:
-                bl, br = br, bl
-            dx = dy = 0.0
-            if self.ref_center is not None and cur_center is not None:
-                dx = cur_center[0] - self.ref_center[0]
-                dy = cur_center[1] - self.ref_center[1]
-            self._draw_sprite(frame, bl, br, dx, dy)
+        if not self.has_layers():
             return
         h, w = frame.shape[:2]
-        s = w / 1280.0  # 目座標は base_face(1280幅)基準。フレーム解像度に合わせる
+        c = self._fit(w, h)
+        s = c["s"]
         dx = dy = 0.0
         if self.ref_center is not None and cur_center is not None:
             dx = cur_center[0] - self.ref_center[0]
             dy = cur_center[1] - self.ref_center[1]
+        dxi, dyi = int(round(dx)), int(round(dy))
         bl, br = self._norm(blink_l), self._norm(blink_r)
         if self.swap:
             bl, br = br, bl
-        skin = _sample_skin(frame, (self.skin_pt[0] * s + dx, self.skin_pt[1] * s + dy))
 
-        def sb(box: EyeBox) -> EyeBox:
-            return EyeBox(box.cx * s + dx, box.cy * s + dy, box.hw * s, box.hh * s)
-
-        _draw_lid(frame, sb(self.left), bl, skin)
-        _draw_lid(frame, sb(self.right), br, skin)
+        # 1) のっぺらぼう化（元の目を消す）
+        if c["eyeless"] is not None:
+            self._comp(frame, c["eyeless"][0], c["eyeless"][1], c["bbox"], dxi, dyi)
+        # 2) 開き目（既定）
+        self._comp(frame, c["open"][0], c["open"][1], c["bbox"], dxi, dyi)
+        # 3) 閉じ目を縦ワイプで降ろす（左右独立）
+        crgb, ca = c["closed"]
+        ys = np.arange(h, dtype=np.float32)[:, None]
+        mL = self._lid(self.left, bl, ys, s, dy)    # (h,1)
+        mR = self._lid(self.right, br, ys, s, dy)
+        split = int(c["split"] + dxi)
+        lid_full = np.zeros((h, w), np.float32)
+        lid_full[:, :split] = mL
+        lid_full[:, split:] = mR
+        closed_a = ca * lid_full
+        self._comp(frame, crgb, closed_a, c["bbox"], dxi, dyi)

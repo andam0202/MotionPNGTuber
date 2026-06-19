@@ -85,7 +85,10 @@ from motionpngtuber.lipsync_core import (
 from motionpngtuber.formant_vowel import classify_vowel, vowel_to_shape, load_calib
 from motionpngtuber.vowel_mfcc import extract_feature as mfcc_extract, load_model as mfcc_load
 from motionpngtuber.eye_track_udp import EyeTrackReceiver
-from motionpngtuber.eye_blink import EyeBlinkOverlay, EyeBox
+from motionpngtuber.eye_blink import (
+    EyeBlinkOverlay, EyeBox,
+    DEFAULT_LEFT as DEFAULT_LEFT_BOX, DEFAULT_RIGHT as DEFAULT_RIGHT_BOX,
+)
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
@@ -1066,16 +1069,16 @@ def run(args) -> None:
                 return default
             v = [float(x) for x in s.split(",")]
             return EyeBox(v[0], v[1], v[2], v[3])
-        closed_rgb = closed_a = None
-        if args.eye_sprite_dir:
-            from motionpngtuber.eye_blink import load_eye_sprite
-            import os as _os
-            spr = load_eye_sprite(_os.path.join(args.eye_sprite_dir, "closed.png"))
-            if spr is not None:
-                closed_rgb, closed_a = spr
-                print(f"[eye] スプライト合成: {args.eye_sprite_dir}/closed.png")
-            else:
-                print(f"[eye] 警告: {args.eye_sprite_dir}/closed.png が読めず手続き描画にフォールバック")
+        import os as _os
+        from motionpngtuber.eye_blink import load_layer
+        sd = args.eye_sprite_dir
+        eyeless = load_layer(_os.path.join(sd, "eyeless.png")) if sd else None
+        open_eye = load_layer(_os.path.join(sd, "open.png")) if sd else None
+        closed = load_layer(_os.path.join(sd, "closed.png")) if sd else None
+        if open_eye is None or closed is None:
+            print(f"[eye] ERROR: {sd}/open.png か closed.png が読めません。build_eye_assets.py / gen_eye_sprites.py を実行してください。")
+        else:
+            print(f"[eye] 層合成: eyeless={'有' if eyeless else '無'} open=有 closed=有 @{sd}")
         # 頭の動きに追従させる基準: 口トラックの frame0 中心(base_face=rest pose相当)
         eye_ref_center = None
         try:
@@ -1086,14 +1089,17 @@ def run(args) -> None:
         except Exception:
             pass
         eye_overlay = EyeBlinkOverlay(
-            left=_parse_box(args.eye_left, EyeBlinkOverlay().left),
-            right=_parse_box(args.eye_right, EyeBlinkOverlay().right),
+            eyeless=eyeless, open_eye=open_eye, closed=closed,
+            left=_parse_box(args.eye_left, DEFAULT_LEFT_BOX),
+            right=_parse_box(args.eye_right, DEFAULT_RIGHT_BOX),
             open_level=args.blink_open, close_level=args.blink_close, swap=args.eye_swap,
-            closed_rgb=closed_rgb, closed_alpha=closed_a, ref_center=eye_ref_center,
+            ref_center=eye_ref_center,
         )
         eye_rx = EyeTrackReceiver(port=args.eye_udp_port).start()
-        mode = "スプライト" if closed_rgb is not None else "手続き"
-        print(f"[eye] UDP まばたき受信 :{args.eye_udp_port} 方式={mode} open={args.blink_open} close={args.blink_close} "
+        if eye_overlay is not None and not eye_overlay.has_layers():
+            eye_overlay = None  # 素材不足なら無効化
+        print(f"[eye] UDP まばたき受信 :{args.eye_udp_port} 層合成={'有効' if eye_overlay else '無効'} "
+              f"open={args.blink_open} close={args.blink_close} "
               f"(Windowsで pose_server.py --host=<WSL_IP> --port={args.eye_udp_port} を起動)")
     env_lp = 0.0
     env_hist = deque(maxlen=args.audio_hz * args.hist_sec)
