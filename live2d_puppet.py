@@ -107,8 +107,8 @@ def load_mouth_states(rs: float):
 def pick_mouth(jaw, pucker, funnel, smile, gain, states):
     """口ブレンドシェイプ→母音口形(closed/half/aa/u/o/e)。フェイストラッキングの口形を反映。"""
     jg = jaw * gain
-    # 実測: この話者は mouthFunnel がほぼ0で、お/う は mouthPucker の大小で分かれる
-    # (お=puck~0.9, う=puck~0.1-0.5)。funnel は補助。
+    # 母音「形」だけ選ぶ(開き「量」は jaw で連続スケールするので段階分けしない)。
+    # 実測: この話者は funnel≈0、お/う は pucker の大小で分かれる(お~0.9/う~0.1-0.5)。
     pk = max(pucker, funnel)
     if jg < 0.12 and pk < 0.25 and smile < 0.30:
         name = "closed"
@@ -116,14 +116,10 @@ def pick_mouth(jaw, pucker, funnel, smile, gain, states):
         name = "o"          # 強いすぼめ/丸め = お
     elif pk > 0.25:
         name = "u"          # 中程度のすぼめ = う
-    elif jg > 0.50:
-        name = "aa"
     elif smile > 0.35:
-        name = "e"
-    elif jg > 0.18:
-        name = "half"
+        name = "e"          # 横引き = い/え
     else:
-        name = "closed"
+        name = "aa"         # 開き = あ(開き量はjawで連続)
     if name in states:
         return name
     # フォールバック
@@ -146,6 +142,16 @@ def _blend(canvas, rgb, a, x0, y0):
     reg = canvas[cy0:cy1, cx0:cx1]
     reg *= (1 - am)
     reg += rgb[sy0:sy0 + (cy1 - cy0), sx0:sx0 + (cx1 - cx0)] * am
+
+
+def _vscale_top(rgb, a, sc):
+    """上端固定で縦スケール(顎が下がる=口が下に開く)。連続値で滑らかに開閉。"""
+    if abs(sc - 1.0) < 0.02:
+        return rgb, a
+    h, w = a.shape
+    M = np.float32([[1, 0, 0], [0, sc, 0]])
+    return (cv2.warpAffine(rgb, M, (w, h), flags=cv2.INTER_LINEAR),
+            cv2.warpAffine(a, M, (w, h), flags=cv2.INTER_LINEAR))
 
 
 def _squash(rgb, a, amount, cy_local):
@@ -232,7 +238,13 @@ def main() -> int:
                 ms = mouth_states.get(mouth_name)
                 if ms is None:
                     continue
-                _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)
+                if mouth_name == "closed":
+                    _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)
+                else:
+                    # 開き量を jaw で連続スケール(段階切替でなく滑らかに開閉)
+                    of = float(np.clip(sjaw * args.mouth_gain, 0.30, 1.0))
+                    r2, a2 = _vscale_top(ms.rgb, ms.a, of)
+                    _blend(canvas, r2, a2, ms.x0 + dx, ms.y0 + dy)
                 continue
             rgb, a = L.rgb, L.a
             if L.name == "irides":
