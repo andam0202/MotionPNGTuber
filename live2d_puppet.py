@@ -39,7 +39,10 @@ Z_ORDER = [
 ]
 EYE_LAYERS = {"eyewhite", "irides"}
 EYE_CY = 436      # 目領域中心y(1280x960基準)
-MOUTH_CY = 690    # 口中心y(下げ気味)
+# 口リップシンク: ループ用に作った良質な口スプライト(aa=大開き等)を流用
+MOUTH_DIR = "/mnt/c/Users/mao0202/Documents/GitHub/MotionPNGTuber/workspace/gura/mouth"
+MOUTH_ANCHOR = (660, 660)   # see-through口中心(1280x960)
+MOUTH_SCALE = 0.85          # 194スプライトの配置倍率
 
 
 class Layer:
@@ -72,6 +75,33 @@ def load_layers(st_dir: str, rs: float):
         ac = a[y0:y1, x0:x1]
         layers.append(Layer(name, depth, rgb, ac, x0, y0))
     return layers
+
+
+def load_mouth_states(rs: float):
+    """ループ口スプライト(closed/half/aa)を口アンカーに配置し、Layerとして返す。"""
+    states = {}
+    ax, ay = MOUTH_ANCHOR[0] * rs, MOUTH_ANCHOR[1] * rs
+    for name in ("closed", "half", "aa"):
+        p = os.path.join(MOUTH_DIR, f"{name}.png")
+        if not os.path.isfile(p):
+            continue
+        im = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+        if im is None or im.shape[2] < 4:
+            continue
+        sc = MOUTH_SCALE * rs
+        im = cv2.resize(im, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+        a = im[:, :, 3].astype(np.float32) / 255.0
+        ys, xs = np.where(a > 0.02)
+        if not len(xs):
+            continue
+        x0c, x1c, y0c, y1c = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+        rgb = im[y0c:y1c, x0c:x1c, :3].astype(np.float32)
+        ac = a[y0c:y1c, x0c:x1c]
+        # スプライト中心をアンカーへ
+        gx = int(ax - (x0c + x1c) / 2)
+        gy = int(ay - (y0c + y1c) / 2)
+        states[name] = Layer(name, 0.5, rgb, ac, x0c + gx, y0c + gy)
+    return states
 
 
 def _blend(canvas, rgb, a, x0, y0):
@@ -117,7 +147,9 @@ def main() -> int:
     layers = load_layers(args.st_dir, rs)
     if not layers:
         print("ERROR: レイヤーが読めません"); return 1
+    mouth_states = load_mouth_states(rs)
     print(f"[live2d] {len(layers)}層 @rs{rs}: {', '.join(l.name for l in layers)}")
+    print(f"[live2d] 口リップシンク: {list(mouth_states)}")
     # canvasサイズ = レイヤーの最大範囲
     H = max(l.y0 + l.a.shape[0] for l in layers)
     W = max(l.x0 + l.a.shape[1] for l in layers)
@@ -146,11 +178,17 @@ def main() -> int:
         for L in layers:
             dx = int(round(args.k_yaw * sy * L.depth * rs))
             dy = int(round(args.k_pitch * sp * L.depth * rs))
+            if L.name == "mouth" and mouth_states:
+                # see-through口の代わりに jaw でループ口スプライトを選択
+                ms = mouth_states.get("aa") if sjaw > 0.45 else (
+                    mouth_states.get("half") if sjaw > 0.15 else mouth_states.get("closed"))
+                if ms is None:
+                    continue
+                _blend(canvas, ms.rgb, ms.a, ms.x0 + dx, ms.y0 + dy)
+                continue
             rgb, a = L.rgb, L.a
             if L.name in EYE_LAYERS:
                 rgb, a = _squash(rgb, a, sbl, eye_cy_r - L.y0)
-            elif L.name == "mouth":
-                rgb, a = _squash(rgb, a, -sjaw, mouth_cy_r - L.y0)  # 負=縦に伸ばす(開く)
             if L.name == "irides":
                 dx += int(round(lx * 18 * rs)); dy += int(round(-ly * 12 * rs))
             _blend(canvas, rgb, a, L.x0 + dx, L.y0 + dy)

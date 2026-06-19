@@ -35,6 +35,7 @@ CKPT = "ill\\obsessionIllustrious_vPredV11.safetensors"
 STATES = {
     "closed":   "(closed eyes:1.45), eyes closed, ^_^, closed eye smile, eyelid, eyelashes, smooth skin",
     "half":     "(half-closed eyes:1.3), sleepy half-lidded eyes, droopy eyes",
+    "mouth_open": "(open mouth:1.4), mouth open, teeth, (sharp teeth:1.2), :D",
 }
 
 # base_face(1280x960) で実測した目box: (cx,cy,hw,hh)
