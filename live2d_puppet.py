@@ -226,17 +226,13 @@ def main() -> int:
             rgb, a = L.rgb, L.a
             if L.name == "irides":
                 dx += int(round(lx * 18 * rs)); dy += int(round(-ly * 12 * rs))
+            if L.name in EYE_LAYERS:
+                a = a * (1.0 - sbl)  # 閉じるほど開き目を薄く(クロスフェード)
             _blend(canvas, rgb, a, L.x0 + dx, L.y0 + dy)
-            # まつ毛の後に「閉じ目イラスト」を上から不透明ワイプで降ろす
+            # まつ毛の後に閉じ目イラストをフェードイン(開き目とクロスフェード)
             if L.name == "eyelash" and eye_closed is not None and sbl > 0.02:
                 ecr, eca, ex0, ey0 = eye_closed
-                eh = eca.shape[0]
-                lid = max(1, int(sbl * eh))
-                lm = np.zeros((eh, 1), np.float32)
-                fth = max(2, int(eh * 0.08))
-                yy = np.arange(eh)[:, None]
-                lm = np.clip((lid - yy) / fth, 0.0, 1.0).astype(np.float32)
-                _blend(canvas, ecr, eca * lm, ex0 + dx, ey0 + dy)
+                _blend(canvas, ecr, eca * sbl, ex0 + dx, ey0 + dy)
 
         out = canvas.astype(np.uint8)
         if abs(sr) > 0.5:
@@ -244,8 +240,11 @@ def main() -> int:
             out = cv2.warpAffine(out, M, (W, H), flags=cv2.INTER_LINEAR,
                                  borderValue=tuple(int(x) for x in bg))
         now = time.perf_counter(); fps = 0.9 * fps + 0.1 / max(1e-3, now - last); last = now
-        cv2.putText(out, f"yaw{sy:+.0f} pitch{sp:+.0f} roll{sr:+.0f} jaw{sjaw:.2f} fps{fps:.0f}",
-                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 80, 220), 2)
+        cv2.putText(out, f"yaw{sy:+.0f} pitch{sp:+.0f} roll{sr:+.0f} fps{fps:.0f}",
+                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 80, 220), 2)
+        # 口形状キャリブレーション用に実値を表示(お/うの閾値調整に使う)
+        cv2.putText(out, f"jaw{sjaw:.2f} puck{spuck:.2f} fun{sfun:.2f} smi{ssmi:.2f} ->{mouth_name}",
+                    (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 40, 40), 2)
         cv2.imshow(win, out)  # 既にBGR(色反転しない)
         if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
             break
