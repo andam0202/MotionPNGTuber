@@ -46,9 +46,9 @@ class EyeBox:
     hh: float
 
 
-# gura loop(1280x960)実測の目領域（縦ワイプのまぶた範囲＆左右分割に使用）
-DEFAULT_LEFT = EyeBox(486.0, 428.0, 114.0, 80.0)
-DEFAULT_RIGHT = EyeBox(742.0, 428.0, 114.0, 80.0)
+# see-through層の実位置で再較正した目領域（縦ワイプのまぶた範囲＆左右分割に使用）
+DEFAULT_LEFT = EyeBox(468.0, 435.0, 108.0, 66.0)
+DEFAULT_RIGHT = EyeBox(838.0, 438.0, 110.0, 66.0)
 
 
 class EyeBlinkOverlay:
@@ -58,7 +58,7 @@ class EyeBlinkOverlay:
                  left: EyeBox = DEFAULT_LEFT, right: EyeBox = DEFAULT_RIGHT,
                  open_level: float = 0.25, close_level: float = 0.6,
                  ref_center: tuple[float, float] | None = None,
-                 swap: bool = False, split_x: float = 614.0) -> None:
+                 swap: bool = False, split_x: float = 652.0) -> None:
         self._eyeless0 = eyeless    # (rgb, a) 目消し肌
         self._open0 = open_eye      # (rgb, a) 開き目
         self._closed0 = closed      # (rgb, a) 閉じ目

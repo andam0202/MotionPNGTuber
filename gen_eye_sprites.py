@@ -134,6 +134,8 @@ def main() -> int:
     ap.add_argument("--mirror", action="store_true", default=True,
                     help="左目だけ生成し右目はミラー複製(左右対称・確実)。--no-mirror で両目生成")
     ap.add_argument("--no-mirror", dest="mirror", action="store_false")
+    ap.add_argument("--mask-png", default="",
+                    help="このマスク画像(白=inpaint)を両目一括で使う。のっぺらぼう肌＋実位置マスク用。指定でミラー無効")
     args = ap.parse_args()
 
     base = cv2.imread(args.base)
@@ -171,11 +173,16 @@ def main() -> int:
         out[ry - rh:ry + rh, rx - rw:rx + rw] = flip
         return out
 
-    print(f"=== ComfyUI {args.host} / base {w}x{h} / 左目inpaint→右目はミラー ===")
+    ext_mask = cv2.imread(args.mask_png, 0) if args.mask_png else None
+    mode = "外部マスク両目一括" if ext_mask is not None else ("左目→右ミラー" if args.mirror else "片目ずつ")
+    print(f"=== ComfyUI {args.host} / base {w}x{h} / {mode} ===")
     for st in [s.strip() for s in args.states.split(",") if s.strip() in STATES]:
         print(f"--- {st}: {STATES[st]} ---")
         try:
-            if args.mirror:
+            if ext_mask is not None:
+                print("  のっぺらぼう肌＋実位置マスクで両目一括 inpaint...")
+                cur = run_and_fetch(base.copy(), ext_mask, STATES[st], args.seed)
+            elif args.mirror:
                 print("  左目(EYES[0])を inpaint...")
                 cur = run_and_fetch(base.copy(), build_mask(w, h, only=0), STATES[st], args.seed)
                 cur = mirror_l2r(cur)
